@@ -1,0 +1,244 @@
+/* fanoutd — one token layer for the whole UI.
+ *
+ * Two rules hold everything together. Authorship is legible from the typeface:
+ * the idea a person wrote is the only thing set in a serif, and every path, id
+ * and count the machine derived is monospace. And ultramarine means one thing,
+ * running, so it appears nowhere else. */
+
+:root {
+  --paper:      #E9E7DF;
+  --panel:      #F5F3ED;
+  --sunk:       #E2DFD5;
+  --rule:       #B8B4A5;
+  --rule-soft:  #D3CFC2;
+  --ink:        #1F2320;
+  --ink-2:      #5C605A;
+  --ink-3:      #8A8D85;
+  --live:       #2A45D8;
+  --live-wash:  #E4E6F8;
+  --fault:      #9B3A2E;
+  --fault-wash: #F3E3E0;
+
+  --f-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --f-ui: 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'Fragment Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+
+  --r: 2px;
+  --shadow: 0 1px 0 rgba(31,35,32,.06), 0 8px 24px -16px rgba(31,35,32,.35);
+}
+
+/* Self-hosting the three faces is a drop-in: put the woff2 files in
+ * frontend/public/fonts/ and uncomment. Until then the stacks above fall back
+ * to system faces, which keeps the build free of a network fetch.
+ *
+ * @font-face { font-family: 'Newsreader'; src: url('/fonts/newsreader-italic.woff2') format('woff2'); font-style: italic; font-weight: 300 700; font-display: swap; }
+ * @font-face { font-family: 'Public Sans'; src: url('/fonts/public-sans.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+ * @font-face { font-family: 'Fragment Mono'; src: url('/fonts/fragment-mono.woff2') format('woff2'); font-display: swap; }
+ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--live); color: var(--panel); }
+
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--live);
+  outline-offset: 2px;
+}
+
+/* ── type ────────────────────────────────────────────────────────────── */
+
+.eyebrow {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.idea {
+  font-family: var(--f-display);
+  font-style: italic;
+  letter-spacing: -.01em;
+  line-height: 1.25;
+}
+
+.mono {
+  font-family: var(--f-mono);
+  font-size: .82rem;
+}
+
+/* ── status mark ─────────────────────────────────────────────────────── */
+/* One glyph for all five states. Filled is settled, hollow is not, and only
+ * running is coloured. */
+
+.mark {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border: 1px solid var(--ink-3);
+  background: none;
+}
+.mark.done    { background: var(--ink); border-color: var(--ink); }
+.mark.running { background: var(--live); border-color: var(--live); animation: mark-pulse 1.6s ease-in-out infinite; }
+.mark.error   { background: var(--fault); border-color: var(--fault); }
+.mark.stopped { background: var(--rule); border-color: var(--rule); }
+
+@keyframes mark-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .mark.running { animation: none; } }
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.state.running { color: var(--live); }
+.state.error   { color: var(--fault); }
+.state.done    { color: var(--ink-2); }
+
+/* ── controls ────────────────────────────────────────────────────────── */
+
+.btn {
+  font-family: var(--f-ui);
+  font-size: 12.5px;
+  line-height: 1.2;
+  padding: 7px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.btn.primary { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+.btn.primary:hover:not(:disabled) { background: #000; }
+
+.btn.live { background: var(--live); border-color: var(--live); color: #fff; }
+.btn.live:hover:not(:disabled) { background: #1E36B8; }
+
+.btn.danger { color: var(--fault); border-color: var(--rule); background: none; }
+.btn.danger:hover:not(:disabled) { border-color: var(--fault); background: var(--fault-wash); }
+
+.btn.quiet { background: none; border-color: transparent; color: var(--ink-2); }
+.btn.quiet:hover:not(:disabled) { border-color: var(--rule); color: var(--ink); }
+
+.btn.tiny { font-size: 11px; padding: 3px 8px; }
+
+/* A control that deletes without a modal to confirm it; stays out of the way
+ * until the row it belongs to is hovered or focused. */
+.x-btn {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s, color .12s;
+}
+.x-btn:hover { color: var(--fault); }
+.x-btn:focus-visible { opacity: 1; }
+
+.field { display: block; margin-bottom: 14px; }
+.field > .eyebrow { display: block; margin-bottom: 5px; }
+
+input[type="text"], input[type="password"], textarea, select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--f-ui);
+  font-size: 13.5px;
+}
+textarea { resize: vertical; line-height: 1.5; }
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input:disabled, textarea:disabled, select:disabled { opacity: .5; }
+
+/* ── surfaces ────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+}
+
+.notice {
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink-3);
+  background: var(--panel);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.notice.bad { border-left-color: var(--fault); background: var(--fault-wash); color: var(--fault); }
+.notice.bad strong { color: var(--fault); }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(31,35,32,.42);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  z-index: 30;
+}
+
+.modal {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow);
+  max-height: min(88vh, 900px);
+  overflow-y: auto;
+}
+.modal-head {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.modal-head h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.modal-body { padding: 18px 20px 20px; }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 14px;
+  margin-top: 4px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+/* ── scrollbars ──────────────────────────────────────────────────────── */
+
+* { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--rule); border: 3px solid var(--paper); border-radius: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }

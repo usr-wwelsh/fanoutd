@@ -1,0 +1,15 @@
+.env
+fanoutd.db
+fanoutd.db-shm
+fanoutd.db-wal
+/fanoutd
+/fanout
+output/
+frontend/dist
+frontend/node_modules
+frontend/.svelte-kit
+frontend/.vercel
+frontend/.output
+node_modules
+*.log
+.DS_Store
