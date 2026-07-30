@@ -183,6 +183,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		Goal        string `json:"goal"`
 		Model       string `json:"model"`
+		// Seed is material to place in the new workspace before the task runs.
+		Seed []models.SeedFile `json:"seed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -192,8 +194,18 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
 	}
+	// Checked before the row is written, so a rejected seed leaves no task
+	// behind that the client did not mean to create.
+	if err := agent.ValidateSeed(req.Seed); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	task, err := s.store.CreateTask(req.Title, req.Description, req.Goal, req.Model)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.loop.SeedTask(task.ID, req.Seed); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -607,6 +619,9 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		Title string `json:"title"`
 		Model string `json:"model"`
 		Start bool   `json:"start"`
+		// Seed is material placed in the shared workspace before the subtasks
+		// run, and shown to the planner so the split can account for it.
+		Seed []models.SeedFile `json:"seed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -614,6 +629,11 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Idea) == "" {
 		http.Error(w, "idea is required", http.StatusBadRequest)
+		return
+	}
+	// Rejected before the model call, which is the expensive half.
+	if err := agent.ValidateSeed(req.Seed); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -625,6 +645,7 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		Idea:  strings.TrimSpace(req.Idea),
 		Model: strings.TrimSpace(req.Model),
 		Start: req.Start,
+		Seed:  req.Seed,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

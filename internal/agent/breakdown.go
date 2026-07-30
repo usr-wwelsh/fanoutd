@@ -106,11 +106,16 @@ type Subtask struct {
 
 // BreakdownRequest is one idea to split. Title is only used if the split fails
 // and the idea has to be created as a single task.
+//
+// Seed is material to place in the shared workspace before anything runs. It is
+// shown to the planner, so the split can be drawn around files that already
+// exist rather than around files the subtasks must invent.
 type BreakdownRequest struct {
 	Title string
 	Idea  string
 	Model string
 	Start bool
+	Seed  []models.SeedFile
 }
 
 // Breakdown turns an idea into a running group, or into one ordinary task.
@@ -143,7 +148,7 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) ([]Subtask, error) {
 	messages := []openrouter.MsgBlock{
 		{Role: "system", Content: breakdownPrompt},
-		{Role: "user", Content: "Idea: " + req.Idea + "\n\nSplit it. Reply with the JSON object and nothing else."},
+		{Role: "user", Content: "Idea: " + req.Idea + seedBrief(req.Seed) + "\n\nSplit it. Reply with the JSON object and nothing else."},
 	}
 
 	var last error
@@ -426,6 +431,13 @@ func (l *Loop) buildGroup(req BreakdownRequest, subs []Subtask) (*models.Breakdo
 		return nil, err
 	}
 
+	// Seeded last, so a group that does not survive validation never leaves a
+	// half-installed workspace behind for unwind to explain.
+	if err := l.seedWorkspace(workspaceID, req.Seed); err != nil {
+		unwind()
+		return nil, err
+	}
+
 	result := &models.BreakdownResult{
 		GroupID: groupID,
 		Tasks:   created,
@@ -497,6 +509,11 @@ func (l *Loop) singleTask(req BreakdownRequest, cause error) (*models.BreakdownR
 	})
 	if err != nil {
 		return nil, err
+	}
+	// The seed was for the idea, not for the shape of the plan, so the fallback
+	// gets it too. A task that cannot be seeded is still worth having.
+	if err := l.seedWorkspace(task.WorkspaceID, req.Seed); err != nil {
+		log.Printf("created fallback task %s but could not seed its workspace: %v\n", shortID(task.ID), err)
 	}
 
 	result := &models.BreakdownResult{

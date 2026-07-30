@@ -71,6 +71,15 @@ type BreakdownResult struct {
 	Started  bool       `json:"started"`
 }
 
+// SeedFile is one file placed in a workspace before anything runs, so an agent
+// starts with material rather than an empty directory. Content travels with the
+// request: the client reads the local path, which is what makes seeding work
+// against a board on another machine.
+type SeedFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
 // FileEntry is one file in a task workspace, as returned by /api/tasks/:id/files.
 type FileEntry struct {
 	Path string `json:"path"`

@@ -154,6 +154,9 @@ type NewTask struct {
 	Description string `json:"description,omitempty"`
 	Goal        string `json:"goal,omitempty"`
 	Model       string `json:"model,omitempty"`
+	// Seed is read from local paths by the caller and sent with the request, so
+	// it reaches a board that has no access to this machine's disk.
+	Seed []models.SeedFile `json:"seed,omitempty"`
 }
 
 func (c *Client) CreateTask(ctx context.Context, nt NewTask) (*models.Task, error) {
@@ -287,6 +290,9 @@ type Idea struct {
 	Title string `json:"title,omitempty"`
 	Model string `json:"model,omitempty"`
 	Start bool   `json:"start,omitempty"`
+	// Seed lands in the shared workspace before the subtasks run, and is shown
+	// to the planner so the split can be drawn around it.
+	Seed []models.SeedFile `json:"seed,omitempty"`
 }
 
 // Breakdown splits an idea into a group of subtasks, or - when it cannot - into
