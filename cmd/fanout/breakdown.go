@@ -18,8 +18,9 @@ func cmdBreakdown(e *env, args []string) error {
 	model := fs.String("model", "", "override the server's default model")
 	start := fs.Bool("start", false, "run the schedule immediately")
 	watch := fs.Bool("watch", false, "with --start, follow every subtask until the group ends")
+	seeds := seedFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), `usage: fanout breakdown "<idea>" [--start] [--watch]`)
+		fmt.Fprintln(fs.Output(), `usage: fanout breakdown "<idea>" [--seed path] [--start] [--watch]`)
 		fs.PrintDefaults()
 	}
 	if err := e.parse(fs, args); err != nil {
@@ -39,11 +40,20 @@ func cmdBreakdown(e *env, args []string) error {
 		return fmt.Errorf(`an idea is required (or "-" to read stdin)`)
 	}
 
+	// Read before the model call, so a bad path costs no tokens.
+	seed, err := collectSeed(*seeds)
+	if err != nil {
+		return err
+	}
+
 	result, err := e.client.Breakdown(e.ctx, client.Idea{
-		Idea: idea, Title: *title, Model: *model, Start: *start,
+		Idea: idea, Title: *title, Model: *model, Start: *start, Seed: seed,
 	})
 	if err != nil {
 		return e.describeErr(err)
+	}
+	if note := describeSeed(seed); note != "" {
+		fmt.Fprintln(e.out, note)
 	}
 
 	// The fallback is the normal outcome for an idea that does not divide, not

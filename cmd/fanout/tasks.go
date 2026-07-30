@@ -15,8 +15,9 @@ func cmdAdd(e *env, args []string) error {
 	model := fs.String("model", "", "override the server's default model")
 	start := fs.Bool("start", false, "start the agent loop immediately")
 	watch := fs.Bool("watch", false, "with --start, follow the run until it ends")
+	seeds := seedFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: fanout add <title> [--goal ...] [--start] [--model ...]")
+		fmt.Fprintln(fs.Output(), "usage: fanout add <title> [--goal ...] [--seed path] [--start] [--model ...]")
 		fs.PrintDefaults()
 	}
 	if err := e.parse(fs, args); err != nil {
@@ -43,11 +44,22 @@ func cmdAdd(e *env, args []string) error {
 		return fmt.Errorf("--start needs a goal (--goal ... or --goal - to read stdin)")
 	}
 
-	task, err := e.client.CreateTask(e.ctx, clientNewTask(title, *desc, g, *model))
+	// Read before the task exists, so a bad path costs nothing on the board.
+	seed, err := collectSeed(*seeds)
+	if err != nil {
+		return err
+	}
+
+	nt := clientNewTask(title, *desc, g, *model)
+	nt.Seed = seed
+	task, err := e.client.CreateTask(e.ctx, nt)
 	if err != nil {
 		return e.describeErr(err)
 	}
 	fmt.Fprintf(e.out, "%s  %s\n", shortID(task.ID), task.Title)
+	if note := describeSeed(seed); note != "" {
+		fmt.Fprintln(e.out, note)
+	}
 
 	if !*start {
 		return nil
