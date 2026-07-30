@@ -95,6 +95,33 @@ removes all of them and the shared workspace behind one confirm. Moving a plan
 anywhere but To-Do stops its schedule, the same way dragging a single running
 task out of To-Do stops it.
 
+## Seeding a workspace
+
+`--seed` puts material in the workspace before anything runs, so an agent starts
+from what you already have instead of an empty directory. It takes a file or a
+directory and is repeatable:
+
+```bash
+fanout add "port it" --goal "port old.py to Go" --seed old.py --start
+fanout breakdown "split this spec into pages" --seed spec.md --seed assets/ --start --watch
+```
+
+A file lands under its own name and a directory under its own name as a prefix —
+`--seed assets/` arrives as `assets/...`, the same as copying the argument into
+the workspace. Dotted names are skipped at every level, so `.git` and `.env` in a
+working directory are never handed to an agent.
+
+The CLI reads the paths and sends the contents with the request, because the
+board may be on another machine. Text only: content travels as JSON and the
+agent's tools are text tools, so a binary file is refused rather than corrupted.
+Limits are 256 KB per file and 2 MB in total, enforced on both sides.
+
+For a breakdown the seed is also shown to the planner, so the split is drawn
+around files that exist rather than around files the subtasks have to invent.
+Seeded files are unowned: any subtask may read one, and a subtask may claim one
+in `writes` if its job is to replace it. A seed still reaches the single task the
+idea falls back to when it cannot be split.
+
 ## Agent Tools
 
 The agent gets a sandboxed workspace at `output/<task-id>/` and these tools:
@@ -219,7 +246,7 @@ before exposing it beyond localhost.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/tasks` | List all tasks |
-| POST | `/api/tasks` | Create task (starts in Ideas) |
+| POST | `/api/tasks` | Create task (starts in Ideas); optional `seed: [{path, content}]` |
 | GET | `/api/tasks/:id` | Get task + trace |
 | PUT | `/api/tasks/:id` | Update task |
 | DELETE | `/api/tasks/:id` | Delete task |
@@ -232,7 +259,7 @@ before exposing it beyond localhost.
 | GET | `/api/tasks/:id/raw?path=` | One workspace file, served inline |
 | POST | `/api/tasks/:id/continue` | New goal against the same workspace |
 | POST | `/api/tasks/:id/retry` | Same brief, clean workspace |
-| POST | `/api/breakdown` | Split an idea into a group of subtasks; blocks on the model |
+| POST | `/api/breakdown` | Split an idea into a group of subtasks; blocks on the model; optional `seed: [{path, content}]` |
 | GET | `/api/groups/:id/plan` | The resolved waves and every subtask's state |
 | POST | `/api/groups/:id/start` | Run the schedule; 409 if already running |
 | POST | `/api/groups/:id/stop` | Cancel the schedule and every subtask under it |
@@ -267,8 +294,8 @@ c762903  Tetris clone          todo      running   step 7      write_file wrote 
 
 | Command | Notes |
 |---|---|
-| `add <title> [--goal ...] [--desc ...] [--model ...] [--start] [--watch]` | `--goal -` reads the goal from stdin |
-| `breakdown "<idea>" [--model ...] [--start] [--watch]` | split it into subtasks and run them; `-` reads stdin |
+| `add <title> [--goal ...] [--desc ...] [--seed path] [--model ...] [--start] [--watch]` | `--goal -` reads the goal from stdin |
+| `breakdown "<idea>" [--seed path] [--model ...] [--start] [--watch]` | split it into subtasks and run them; `-` reads stdin |
 | `plan <group> [--start] [--watch] [--json]` | the wave plan of a breakdown, and its subtasks |
 | `ls [--col todo] [--status running] [--json] [--plain]` | the table above |
 | `show <id> [--last N] [--json]` | task, files, and its last few steps |

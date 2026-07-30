@@ -60,8 +60,8 @@ name files, so:
 
 - Say what artifacts exist. "a CLI with a scanner, a renderer, tests, and a
   README" splits cleanly; "make it good" does not.
-- Name the language and the shape of the deliverable. The agent starts from an
-  empty workspace and has no view of your repo.
+- Name the language and the shape of the deliverable. The agent has no view of
+  your repo, and starts from an empty workspace unless you seed one.
 - Anything every subtask would touch — an index, a manifest, a shared
   stylesheet — should be described as a final integration step, so it lands as
   one subtask that owns the file and reads its siblings' output.
@@ -81,6 +81,45 @@ fanout add "<title>" --goal "<what done looks like>" --start
 
 `--goal -` reads the goal from stdin, which is the right way to pass anything
 long or multi-line.
+
+## Seeding the workspace
+
+The agent cannot see this repo. When the work is *about* existing files — port
+this, refactor this, write docs for this, build against this spec — put them in
+the workspace with `--seed` instead of pasting them into the goal:
+
+```bash
+fanout add "port it" --goal "port old.py to Go in main.go" --seed old.py --start
+fanout breakdown "build the pages this spec describes" --seed spec.md --seed assets/ --start
+```
+
+`--seed` takes a file or a directory and is repeatable. A file lands under its
+own name, a directory under its own name as a prefix (`--seed assets/` →
+`assets/...`), exactly as if you had copied the argument in. Dotted names are
+skipped at every level, so `.git` and `.env` never travel. Text only, 256 KB per
+file and 2 MB total.
+
+**Prefer this to a long goal.** A goal describing a file the agent can read is
+worse on both ends: it costs prompt tokens on every step and the agent works from
+your paraphrase instead of the real thing.
+
+**Say in the goal what to read.** Seeded files are listed to the agent, but a
+goal that names them — "read spec.md, then write..." — is what makes it read them
+first. For a breakdown the planner is shown the seed and will draw the split
+around it, so mention the seeded material in the idea too.
+
+Seeded files are unowned, so any subtask may read one and one may rewrite it if
+that is its job. If the breakdown falls back to a single task, the seed still
+lands.
+
+Two things to check before seeding:
+
+- **Scope it.** Seed the files the work is about, not the repo. A wide `--seed .`
+  buries the agent and will hit the size limit.
+- **Secrets.** Dotfiles are skipped, but a plainly-named `credentials.json` or
+  `config/prod.yaml` is not. You are uploading to a server that may not be this
+  machine — check what a directory contains before seeding it, and ask the user
+  if anything in it looks sensitive.
 
 ## Watching
 
@@ -134,7 +173,9 @@ rather than retrying.
 
 To bring output into the repo, `fanout cat` it and write the file yourself.
 Never copy out of `output/` by path: the workspace belongs to the server, which
-may not be this machine.
+may not be this machine. `fanout files` lists seeded files alongside produced
+ones, so check the listing against what you seeded before reporting what a run
+made.
 
 ## When a run goes wrong
 
@@ -168,3 +209,5 @@ Both are destructive to someone else's board — ask first.
   the server's lifecycle is the user's.
 - Don't treat a fallback single task as a failed breakdown, or a `2` exit as a
   broken command.
+- Don't seed a directory you have not looked at, and don't seed a whole repo to
+  save yourself picking the files.
