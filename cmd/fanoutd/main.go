@@ -62,6 +62,27 @@ func main() {
 	client := openrouter.NewClient(cfg.OpenRouterKey, cfg.OpenRouterModel, cfg.BaseURL)
 	loop := agent.NewLoop(s, client, cfg.OutputDir)
 	loop.SetMaxParallel(cfg.MaxParallel)
+
+	// A sandbox that cannot be built is not degraded into an unsandboxed shell:
+	// the tool is simply never offered, and agents stay file-only.
+	if cfg.Shell {
+		sb, err := agent.NewSandbox(agent.SandboxConfig{
+			Network:   cfg.ShellNet,
+			Timeout:   cfg.ShellTimeout,
+			MemoryMax: cfg.ShellMemory,
+			TasksMax:  cfg.ShellTasks,
+			CPUQuota:  cfg.ShellCPU,
+			MaxExec:   cfg.ShellMaxExec,
+			ROBind:    cfg.ShellROBind,
+			StateDir:  cfg.SandboxDir,
+		})
+		if err != nil {
+			log.Printf("shell commands disabled: %v\n", err)
+		} else {
+			loop.SetSandbox(sb)
+			log.Printf("shell commands enabled (%s)\n", sb.Describe())
+		}
+	}
 	srv := server.New(s, loop, client, cfg, ui())
 
 	stop := make(chan os.Signal, 1)

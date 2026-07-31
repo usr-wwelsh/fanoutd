@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -23,6 +24,17 @@ type Config struct {
 	Token string
 	// EnvFile records which file the settings were read from, or "" for none.
 	EnvFile string
+	// Shell enables the sandboxed run_command tool. Off by default, and ignored
+	// when bubblewrap will not run.
+	Shell        bool
+	ShellNet     bool
+	ShellTimeout time.Duration
+	ShellMemory  string
+	ShellTasks   int
+	ShellCPU     string
+	ShellMaxExec int
+	ShellROBind  []string
+	SandboxDir   string
 }
 
 // Load reads defaults, then an env file, then the environment. Exported
@@ -59,11 +71,54 @@ func Load() Config {
 		cfg.MaxParallel = n
 	}
 
+	cfg.Shell = truthy(get("FANOUT_SHELL"))
+	cfg.ShellNet = truthy(get("FANOUT_SHELL_NET"))
+	cfg.ShellMemory = "2G"
+	cfg.ShellTasks = 512
+	cfg.ShellCPU = "200%"
+	cfg.ShellTimeout = 120 * time.Second
+	if v := get("FANOUT_SHELL_MEMORY"); v != "" {
+		cfg.ShellMemory = v
+	}
+	if v := get("FANOUT_SHELL_CPU"); v != "" {
+		cfg.ShellCPU = v
+	}
+	if n, err := strconv.Atoi(get("FANOUT_SHELL_TASKS")); err == nil && n > 0 {
+		cfg.ShellTasks = n
+	}
+	if n, err := strconv.Atoi(get("FANOUT_SHELL_TIMEOUT")); err == nil && n > 0 {
+		cfg.ShellTimeout = time.Duration(n) * time.Second
+	}
+	if n, err := strconv.Atoi(get("FANOUT_MAX_EXEC")); err == nil && n > 0 {
+		cfg.ShellMaxExec = n
+	}
+	cfg.ShellROBind = splitPaths(get("FANOUT_SHELL_ROBIND"))
+
 	cfg.DataDir = dataDir(get("FANOUT_DATA_DIR"))
 	cfg.DatabasePath = resolve(cfg.DataDir, get("DATABASE_PATH"), "fanoutd.db")
 	cfg.OutputDir = resolve(cfg.DataDir, get("OUTPUT_DIR"), "output")
+	cfg.SandboxDir = resolve(cfg.DataDir, get("FANOUT_SANDBOX_DIR"), "sandbox")
 
 	return cfg
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// splitPaths reads a colon-separated path list, PATH-style.
+func splitPaths(v string) []string {
+	paths := []string{}
+	for _, p := range strings.Split(v, ":") {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, abs(p))
+		}
+	}
+	return paths
 }
 
 // dataDir picks where state lives: an explicit setting, else XDG, else the

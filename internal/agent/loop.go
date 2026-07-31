@@ -62,6 +62,28 @@ files, omit "tool".
 Never repeat an action you have already taken - the result is already in the conversation.
 Each step must make new progress.`
 
+// shellPrompt is appended only when a sandbox exists. It is deliberately silent
+// about which languages are available: the toolchain is whatever the host has,
+// and naming a few would narrow what the model tries.
+const shellPrompt = `
+
+You also have run_command, which runs a shell command line in your workspace. Use it to
+build, test and check the work you have written - a deliverable you have actually
+compiled or run is worth more than one you have only written.
+
+Every command already starts in your workspace directory, which already exists. Do not
+cd into it, and never mkdir it - use relative paths like "go build ./..." and let the
+working directory be what it is.
+
+The sandbox has no network access, so anything that downloads dependencies will fail.
+Only your workspace and /build are writable. Compiler and package caches already go
+outside the workspace, but a binary lands wherever you tell it to: build to /build, as in
+"go build -o /build/tool .", so your workspace keeps the source you were asked for rather
+than a megabyte of compiled output.
+
+Long-running commands are killed, so prefer targeted builds and tests over whole-repo
+ones. Re-running a command you have already run, unchanged, is not progress.`
+
 type Loop struct {
 	store   *store.Store
 	client  *openrouter.Client
@@ -74,6 +96,16 @@ type Loop struct {
 	maxSteps    int
 	maxParallel int
 	outputDir   string
+	// sandbox is nil when bubblewrap is unavailable or shell commands are
+	// switched off, which withholds run_command rather than degrading it.
+	sandbox *Sandbox
+}
+
+// SetSandbox enables the shell tool. A nil sandbox leaves agents file-only.
+func (l *Loop) SetSandbox(sb *Sandbox) {
+	l.mu.Lock()
+	l.sandbox = sb
+	l.mu.Unlock()
 }
 
 func NewLoop(s *store.Store, c *openrouter.Client, outputDir string) *Loop {
@@ -304,6 +336,11 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 	// moment, so their writes are arbitrated. A task that merely continues an
 	// earlier run is alone in its workspace and must stay free to edit anything
 	// it inherited — hence the group, not the shared workspace, as the trigger.
+	l.mu.Lock()
+	sandbox := l.sandbox
+	l.mu.Unlock()
+	ws = ws.Sandboxed(taskID, sandbox)
+
 	if t, err := l.store.GetTask(taskID); err == nil && t != nil && t.GroupID != "" {
 		ws = ws.Owned(taskID, l.store)
 	}
@@ -353,11 +390,11 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		// A continued task inherits a workspace that already has files in it;
 		// listing them keeps the agent from rewriting work it could build on.
 		existing, _ := ws.List()
-		messages := buildMessages(task, ws.Root(), existing, trace)
+		messages := buildMessages(task, ws.Root(), existing, trace, sandbox != nil)
 
 		// Native tool calls are the primary path; once the model has produced
 		// something unusable, retry under a forced JSON response format instead.
-		opts := openrouter.ChatOptions{Tools: ToolDefs(), Model: task.Model}
+		opts := openrouter.ChatOptions{Tools: ToolDefs(sandbox != nil), Model: task.Model}
 		if parseFailures > 0 {
 			opts = openrouter.ChatOptions{ForceJSON: true, Model: task.Model}
 		}
@@ -401,12 +438,20 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		}
 
 		action := result.Action
+		logged := loggedAction(action, result.Tool)
 
 		if result.Tool != nil {
 			key := "tool\x00" + result.Tool.signature()
+			// A command is judged against the files it runs on, not on its text
+			// alone. Re-running the tests after fixing what they caught is the
+			// loop working as intended; without this the guard aborts an agent
+			// that is converging, which is the one case it should leave alone.
+			if result.Tool.Name == execTool {
+				key += "\x00" + ws.Fingerprint()
+			}
 			seen[key]++
 			if seen[key] >= repeatLimit {
-				l.store.AddTraceStep(taskID, step, action, "", result.Text, result.Tool.Name, "aborted: identical tool call repeated")
+				l.store.AddTraceStep(taskID, step, logged, "", result.Text, result.Tool.Name, "aborted: identical tool call repeated")
 				l.concede(taskID, step, fmt.Sprintf("agent repeated the same %s call %d times without making progress", result.Tool.Name, seen[key]))
 				return
 			}
@@ -417,7 +462,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		if key := normalize(action); key != "" && !result.Synthesized {
 			seen[key]++
 			if seen[key] >= repeatLimit {
-				l.store.AddTraceStep(taskID, step, action, "", result.Text, "", "aborted: identical action repeated")
+				l.store.AddTraceStep(taskID, step, logged, "", result.Text, "", "aborted: identical action repeated")
 				l.concede(taskID, step, fmt.Sprintf("agent repeated the same action %d times without making progress: %q", seen[key], action))
 				return
 			}
@@ -426,7 +471,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		toolName, toolResult := "", ""
 		if result.Tool != nil {
 			toolName = result.Tool.Name
-			out, err := ws.Exec(*result.Tool)
+			out, err := ws.ExecContext(ctx, *result.Tool)
 			if err != nil {
 				toolResult = "error: " + err.Error()
 			} else {
@@ -434,7 +479,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 			}
 		}
 
-		l.store.AddTraceStep(taskID, step, action, "", result.Text, toolName, toolResult)
+		l.store.AddTraceStep(taskID, step, logged, "", result.Text, toolName, toolResult)
 
 		select {
 		case <-ctx.Done():
@@ -499,7 +544,7 @@ func stopped(ctx context.Context) bool {
 	return ctx.Err() != nil
 }
 
-func buildMessages(task *models.Task, workspace string, existing []FileEntry, trace []models.TraceStep) []openrouter.MsgBlock {
+func buildMessages(task *models.Task, workspace string, existing []FileEntry, trace []models.TraceStep, sandboxed bool) []openrouter.MsgBlock {
 	var intro strings.Builder
 	fmt.Fprintf(&intro, "Task goal: %s\n", task.Goal)
 	if task.Description != "" {
@@ -518,8 +563,13 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 
 	intro.WriteString("\nWhat is your next action?")
 
+	system := systemPrompt
+	if sandboxed {
+		system += shellPrompt
+	}
+
 	msgs := []openrouter.MsgBlock{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: system},
 		{Role: "user", Content: intro.String()},
 	}
 
@@ -638,7 +688,30 @@ File contents go inside the "content" string, JSON-escaped — newlines as \n an
 quotes as \". Send the corrected reply now.`, err)
 }
 
+// loggedAction is what the trace records. describeCall only names the command
+// when the model wrote no action text of its own, and most of the time it does
+// — so without this the command is recorded nowhere, since native tool call
+// arguments are never replayed. That leaves the operator reading an
+// unexplained failure and the model reading output it cannot attribute.
+func loggedAction(action string, tc *ToolCall) string {
+	if tc == nil || tc.Command == "" {
+		return action
+	}
+	ran := "[ran: " + truncate(tc.Command, 200) + "]"
+	if strings.Contains(action, ran) {
+		return action
+	}
+	return strings.TrimSpace(action + " " + ran)
+}
+
 func describeCall(tc ToolCall) string {
+	if tc.Command != "" {
+		// The command has to appear here or it is recorded nowhere: native tool
+		// call arguments are not replayed, so without this the model reads back
+		// its own output with no idea what produced it, and the trace shows an
+		// unexplained failure.
+		return fmt.Sprintf("[ran: %s]", truncate(tc.Command, 200))
+	}
 	if tc.Path != "" {
 		return fmt.Sprintf("[called %s on %s]", tc.Name, tc.Path)
 	}

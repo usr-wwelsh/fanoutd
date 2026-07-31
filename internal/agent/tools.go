@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"fanoutd/internal/models"
 	"fanoutd/internal/openrouter"
@@ -19,6 +22,10 @@ const readPageBytes = 6000
 
 // finishTool is not a workspace operation - the model calls it to end the run.
 const finishTool = "finish"
+
+// execTool runs a shell command in the workspace. Advertised only when a
+// sandbox exists.
+const execTool = "run_command"
 
 // defaultWriteName catches a write_file call that omits the path. Losing the
 // content over a missing filename costs more than picking one.
@@ -34,10 +41,13 @@ type ToolCall struct {
 	New     string `json:"new"`
 	Summary string `json:"summary"`
 	Offset  int    `json:"offset"`
+	Command string `json:"command"`
 }
 
 // ToolDefs advertises the workspace tools to the model in native form.
-func ToolDefs() []openrouter.Tool {
+// run_command appears only when a sandbox was built, so a host without working
+// bubblewrap never offers the model a tool it will refuse.
+func ToolDefs(sandboxed bool) []openrouter.Tool {
 	str := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}
 	}
@@ -60,7 +70,7 @@ func ToolDefs() []openrouter.Tool {
 	}
 
 	path := str("Path relative to the workspace root.")
-	return []openrouter.Tool{
+	tools := []openrouter.Tool{
 		def("write_file", "Create or overwrite a file in the workspace. Use this for every deliverable - response text is not saved.",
 			map[string]any{"path": path, "content": str("Full file contents.")}, "path", "content"),
 		def("read_file", fmt.Sprintf("Read a file back from the workspace, up to %d bytes per call. If the result says bytes remain, call again with offset set to continue from there.", readPageBytes),
@@ -77,10 +87,23 @@ func ToolDefs() []openrouter.Tool {
 		def(finishTool, "Call this once the goal is fully achieved and every deliverable has been written to a file.",
 			map[string]any{"summary": str("What you produced, including the files you wrote.")}, "summary"),
 	}
+
+	if sandboxed {
+		tools = append(tools, def(execTool,
+			"Run a shell command in the workspace to build, test or inspect what you have written. "+
+				"Runs in an isolated sandbox with no network access; only the workspace is writable. "+
+				"Build artifacts belong outside the workspace — the toolchain is already configured to put them there. "+
+				"Returns combined stdout and stderr with the exit status.",
+			map[string]any{"command": str("Shell command line, e.g. \"go test ./...\" or \"cargo build\".")}, "command"))
+	}
+	return tools
 }
 
 func (t *ToolCall) signature() string {
-	return strings.Join([]string{t.Name, t.Path, t.Content, t.Old, t.New, strconv.Itoa(t.Offset)}, "\x00")
+	// The command is part of the signature, so re-running an identical command
+	// without changing anything counts against the repeat limit — which is the
+	// right call: it is the shape of an agent stuck on a failing test.
+	return strings.Join([]string{t.Name, t.Path, t.Content, t.Old, t.New, t.Command, strconv.Itoa(t.Offset)}, "\x00")
 }
 
 // Claims arbitrates which task may write which path when several tasks share a
@@ -112,6 +135,9 @@ type Workspace struct {
 	// single-task case and the behaviour every existing caller gets.
 	taskID string
 	claims Claims
+	// sandbox is nil unless shell commands are available, which is what makes
+	// withholding the tool and refusing the call the same decision.
+	sandbox *Sandbox
 }
 
 func NewWorkspace(outputDir, workspaceID string) (*Workspace, error) {
@@ -130,6 +156,15 @@ func (w *Workspace) Owned(taskID string, claims Claims) *Workspace {
 	shared.taskID = taskID
 	shared.claims = claims
 	return &shared
+}
+
+// Sandboxed returns a view of the workspace that can run shell commands as
+// taskID. A nil sandbox leaves the workspace file-only.
+func (w *Workspace) Sandboxed(taskID string, sb *Sandbox) *Workspace {
+	shell := *w
+	shell.taskID = taskID
+	shell.sandbox = sb
+	return &shell
 }
 
 func (w *Workspace) Root() string { return w.root }
@@ -225,6 +260,12 @@ func shortID(id string) string {
 
 // Exec runs a tool call and returns a result string for the model.
 func (w *Workspace) Exec(tc ToolCall) (string, error) {
+	return w.ExecContext(context.Background(), tc)
+}
+
+// ExecContext is Exec bound to the run's context, so a stopped task kills the
+// command it is waiting on instead of outliving itself.
+func (w *Workspace) ExecContext(ctx context.Context, tc ToolCall) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(tc.Name)) {
 	case "write_file":
 		return w.writeFile(tc.Path, tc.Content)
@@ -236,9 +277,98 @@ func (w *Workspace) Exec(tc ToolCall) (string, error) {
 		return w.deleteFile(tc.Path)
 	case "list_files":
 		return w.listFiles()
+	case execTool:
+		return w.runCommand(ctx, tc.Command)
 	default:
-		return "", fmt.Errorf("unknown tool %q (available: write_file, read_file, edit_file, delete_file, list_files)", tc.Name)
+		return "", fmt.Errorf("unknown tool %q (available: %s)", tc.Name, strings.Join(w.toolNames(), ", "))
 	}
+}
+
+func (w *Workspace) toolNames() []string {
+	names := []string{"write_file", "read_file", "edit_file", "delete_file", "list_files"}
+	if w.sandbox != nil {
+		names = append(names, execTool)
+	}
+	return names
+}
+
+// runCommand executes a shell command against the workspace and reconciles what
+// it wrote with the claim table afterwards.
+func (w *Workspace) runCommand(ctx context.Context, command string) (string, error) {
+	if w.sandbox == nil {
+		return "", fmt.Errorf("%s is not available on this server", execTool)
+	}
+	if err := os.MkdirAll(w.root, 0o755); err != nil {
+		return "", err
+	}
+
+	before := w.stamps()
+	out, err := w.sandbox.Run(ctx, w.root, w.taskID, command)
+	if err != nil {
+		return "", err
+	}
+	return out + w.reconcile(before), nil
+}
+
+// fileStamp is enough to notice a file changed without reading it back.
+type fileStamp struct {
+	size int64
+	mod  time.Time
+}
+
+func (w *Workspace) stamps() map[string]fileStamp {
+	if w.claims == nil {
+		return nil
+	}
+	stamps := map[string]fileStamp{}
+	entries, err := w.List()
+	if err != nil {
+		return stamps
+	}
+	for _, e := range entries {
+		stamps[e.Path] = fileStamp{size: e.Size, mod: e.Modified}
+	}
+	return stamps
+}
+
+// reconcile takes claims on whatever the command wrote. Shell commands bypass
+// resolveOwned entirely, so without this a subtask could overwrite a sibling's
+// file through a build step and the one-writer rule would hold only for the
+// tools that happen to go through write_file.
+//
+// A path this task actually created becomes its own, exactly as an unplanned
+// write_file would. A path another task holds cannot be given back — the bytes
+// are already on disk — so it is reported instead, which is the same shape of
+// error a refused write_file returns and the only thing the model can act on.
+func (w *Workspace) reconcile(before map[string]fileStamp) string {
+	if w.claims == nil {
+		return ""
+	}
+	after, err := w.List()
+	if err != nil {
+		return ""
+	}
+
+	violations := []string{}
+	for _, e := range after {
+		old, existed := before[e.Path]
+		if existed && old.size == e.Size && old.mod.Equal(e.Modified) {
+			continue
+		}
+		owner, err := w.claims.ClaimWrite(w.workspaceID, e.Path, w.taskID)
+		if err == nil && owner != "" {
+			violations = append(violations, fmt.Sprintf("%s (task %s)", e.Path, shortID(owner)))
+		}
+	}
+	if len(violations) == 0 {
+		return ""
+	}
+	if len(violations) > ownedInError {
+		violations = append(violations[:ownedInError:ownedInError], "...")
+	}
+	return fmt.Sprintf("\n\n[warning: this command wrote files owned by other tasks: %s. "+
+		"Those files are not yours to change — undo the change or work in a path you own.]",
+		strings.Join(violations, ", "))
 }
 
 func (w *Workspace) writeFile(rel, content string) (string, error) {
@@ -370,6 +500,22 @@ func (w *Workspace) List() ([]FileEntry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+// Fingerprint is a cheap summary of what the workspace holds. It exists so a
+// command re-run against edited files can be told apart from one re-run against
+// nothing: `go test` after a fix is progress, `go test` twice in a row is a
+// loop, and the command line alone cannot distinguish them.
+func (w *Workspace) Fingerprint() string {
+	entries, err := w.List()
+	if err != nil {
+		return ""
+	}
+	h := fnv.New64a()
+	for _, e := range entries {
+		fmt.Fprintf(h, "%s\x00%d\x00%d\n", e.Path, e.Size, e.Modified.UnixNano())
+	}
+	return strconv.FormatUint(h.Sum64(), 36)
 }
 
 func (w *Workspace) listFiles() (string, error) {
