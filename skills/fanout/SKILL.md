@@ -138,6 +138,7 @@ fanout breakdown "<idea>" --start --watch    # run_in_background: true
 ```bash
 fanout plan <group>     # every subtask, by wave, with state
 fanout show <id>        # one task: files, status, last few steps
+fanout blocked          # anything that stopped short, board-wide, and why
 ```
 
 Poll on the order of tens of seconds. A step is an LLM call; nothing changes in
@@ -187,6 +188,29 @@ integration subtask, not by whichever one you happened to start from.
 
 The agent stops itself on repetition (same call three times), three consecutive
 invalid responses, or 20 steps. A stopped run keeps its trace.
+
+**Find them with one command**, rather than filtering `ls` and opening each:
+
+```bash
+fanout blocked            # every task that stopped short of its goal, and why
+fanout blocked --resume   # start all of them, from their existing traces
+```
+
+```
+31fcf15  Game entry point and UI  group f04073e  repeated the same action 5 times
+acebc62  test (2)                 -              interrupted by a server restart
+```
+
+The reason on each line is the whole diagnosis for the ordinary cases —
+repetition, unusable output, the step limit, a restart. **Resume on it directly**;
+opening `show` or `trace` first buys nothing, because resuming replays the trace
+the agent already has. Read the trace only when a task comes back blocked twice
+on the same reason, which means resuming is not enough and the brief needs
+changing (`continue`) or the run needs a clean start (`retry`).
+
+Default scope is the `todo` column — tasks that were meant to be running. A
+conceded run is filed under Finished as `done`, and anything the user dragged to
+Ideas or Finished they have already looked at; `--all` reaches those.
 
 | Situation | Command |
 |---|---|

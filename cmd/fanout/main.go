@@ -50,6 +50,7 @@ func commands() []command {
 		{"breakdown", "split an idea into subtasks and run them", cmdBreakdown},
 		{"plan", "the wave plan of a breakdown, and its subtasks", cmdPlan},
 		{"ls", "list tasks", cmdLs},
+		{"blocked", "tasks that stopped short, and why", cmdBlocked},
 		{"show", "task detail plus its last few steps", cmdShow},
 		{"watch", "follow a running task until it finishes", cmdWatch},
 		{"trace", "step history, truncated unless --full", cmdTrace},

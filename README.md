@@ -402,6 +402,7 @@ c762903  Tetris clone          todo      running   step 7      write_file wrote 
 | `breakdown "<idea>" [--seed path] [--model ...] [--start] [--watch]` | split it into subtasks and run them; `-` reads stdin |
 | `plan <group> [--start] [--watch] [--json]` | the wave plan of a breakdown, and its subtasks |
 | `ls [--col todo] [--status running] [--json] [--plain]` | the table above |
+| `blocked [--resume] [--all] [--json]` | runs that stopped short, and why |
 | `show <id> [--last N] [--json]` | task, files, and its last few steps |
 | `watch <id> [--interval 2s]` | prints steps as they land, exits when the run ends |
 | `trace <id> [--last N] [--full] [--json]` | truncated by default |
@@ -411,6 +412,25 @@ c762903  Tetris clone          todo      running   step 7      write_file wrote 
 | `continue <id> --goal ...` | new goal, same workspace |
 | `retry <id> [--model ...]` | same brief, clean workspace |
 | `models` | what this server accepts for `--model` |
+
+**Blocked runs.** Every guard above ends a run with the reason already on the
+task — in `error` when it failed outright, in the parenthetical of `summary`
+when it conceded. So the question "what needs a nudge?" is one request and one
+line per answer, rather than filtering `ls` and opening each hit:
+
+```
+$ fanout blocked
+31fcf15  Game entry point and UI  group f04073e  repeated the same action 5 times
+acebc62  test (2)                 -              interrupted by a server restart
+
+2 blocked tasks — resume with `fanout blocked --resume`
+```
+
+`--resume` starts every task listed, each from its existing trace, and does not
+stop at the first one the server refuses. The default scope is the To-Do column —
+what was meant to be running. A conceded run is filed under Finished as `done`,
+and Ideas and Finished are where a task lands once someone has dealt with it, so
+those need `--all`.
 
 **Output shaping.** `GET /api/tasks/:id/trace` returns every prompt and response
 verbatim, which is unusable in a terminal and worse in an agent's context
