@@ -133,10 +133,77 @@ The agent gets a sandboxed workspace at `output/<task-id>/` and these tools:
 | `edit_file` | `path`, `old`, `new` | Replace the first occurrence of `old` |
 | `delete_file` | `path` | Delete a file |
 | `list_files` | — | List the workspace |
+| `run_command` | `command` | Run a shell command in the workspace (only with `FANOUT_SHELL=1`) |
 
 Paths are relative and resolved inside the workspace; absolute paths and `..` escapes are
 rejected. The files the agent produces are listed in the task detail panel and live on
 disk under `output/`.
+
+## Shell commands
+
+Off by default. `FANOUT_SHELL=1` gives agents `run_command`, so they can compile and test
+what they write instead of only writing it.
+
+The command line is never parsed, escaped, or matched against an allowlist. It goes
+straight to `/bin/sh` inside a [bubblewrap](https://github.com/containers/bubblewrap)
+jail, because the jail is the security boundary and there is nothing inside it to escape
+to. That is also what keeps fanoutd language-agnostic: whatever toolchain the host has
+under `/usr` is what an agent can run, and there is no per-language code in the server.
+
+**bubblewrap is mandatory.** At startup the sandbox is probed by running a real command
+through the real jail — not by looking for the binary, since an unprivileged user
+namespace can be missing or blocked. If the probe fails the server logs why, `run_command`
+is never advertised to the model, and a model that asks for it anyway is refused. There is
+no unsandboxed fallback.
+
+The workspace is mounted at **the same absolute path it has on the host**, and every
+command starts there. That is not cosmetic: the model is told that path in its prompt and
+the file tools accept it, so a shell that disagreed would make the prompt true for five
+tools and false for the sixth. Mounting it somewhere tidier cost a run — `cd <workspace>`
+failed, the agent concluded the directory did not exist, and `mkdir -p <workspace> && cd
+<workspace> && go mod init` then reported complete success against a directory inside the
+jail's own root that evaporated when the command exited.
+
+Inside the jail:
+
+- **No network.** A command cannot fetch dependencies, and cannot exfiltrate a workspace.
+- **Nothing writable but the workspace.** `/usr` and `/etc` are read-only; the rest of the
+  host is not mounted at all.
+- **No environment.** `--clearenv`, so `OPENROUTER_API_KEY` is not in scope. Without this
+  a command reads the key, it lands in the trace, and from there in the next prompt.
+- **Resource limits** from a transient systemd user scope — bubblewrap has none of its own,
+  and `--unshare-pid` contains a fork bomb's cleanup but not its appetite. Where there is
+  no user manager the limits are skipped with a warning; the boundary is unaffected.
+- **A wall-clock timeout**, which starts *after* a command acquires a slot, so queueing
+  never eats its budget.
+- **Capped output**, head and tail. Tool results are replayed into the next prompt, so an
+  uncapped `find /` costs context and tokens rather than just scrollback.
+
+**Build artifacts stay out of the workspace.** Each task gets a private `/build`
+(`CARGO_TARGET_DIR`, `GOPATH`, `HOME`) and all tasks share `/cache` (`GOCACHE`,
+`GOMODCACHE`, `CARGO_HOME`, npm). Private build directories matter for more than tidiness:
+cargo takes an exclusive lock on its target directory, so a shared one would serialize
+parallel subtasks into what looks like a hang. The shared caches are content-addressed or
+self-locking, so concurrent use is safe and a second build does not start cold.
+
+**Shell writes are reconciled against the claim table.** A command bypasses the
+`write_file` path entirely, so without this the one-writer rule would hold only for the
+tools that happen to go through it. The workspace is stamped before and after; paths the
+task created become its own, exactly as an unplanned `write_file` would, and paths another
+task owns are reported back in the same shape as a refused write. Already-written bytes
+cannot be taken back, so this detects rather than prevents — which is also why serializing
+builds would not have helped: sequential clobbering is still clobbering.
+
+**Toolchains outside `/usr`** — rustup, nvm, pyenv, `go install` — need `FANOUT_SHELL_ROBIND`,
+a colon-separated list of host paths to mount read-only. Any entry with a `bin/`
+subdirectory joins `PATH`. It is empty by default because binding a home directory would
+hand every agent your ssh keys.
+
+`FANOUT_MAX_EXEC` caps concurrent commands and is unlimited by default. The cgroup limits
+already bound the machine, and a global build lock would make the rolling-parallel
+scheduler run one wide at exactly its most expensive step. Set it only if you see thrash.
+
+See [.env.example](.env.example) for every knob.
 
 ## Setup
 

@@ -5,6 +5,7 @@ fanoutd.db-wal
 /fanoutd
 /fanout
 output/
+sandbox/
 frontend/dist
 frontend/node_modules
 frontend/.svelte-kit
