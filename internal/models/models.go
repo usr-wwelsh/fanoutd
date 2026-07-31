@@ -87,6 +87,11 @@ type FileEntry struct {
 	Abs      string    `json:"abs"`
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
+	// Owned reports that this task wrote the file, as opposed to a sibling
+	// subtask it shares the workspace with. A solo task owns everything in its
+	// workspace, so it is only meaningful within a breakdown — where without it a
+	// listing credits all five subtasks' output to whichever one you asked.
+	Owned bool `json:"owned"`
 }
 
 type TraceStep struct {

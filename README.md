@@ -153,7 +153,9 @@ the id, which is read as the path inside the workspace rather than recreated as 
 directory tree under it.
 
 The files the agent produces are listed in the task detail panel and live on disk under
-`output/`.
+`output/`. Within a breakdown that listing is the shared workspace, so each file is
+marked with whether this task wrote it; `fanout files` shows a subtask's own output and
+`--all` shows everything beside it.
 
 Repeating yourself ends a run, but only when nothing moved: a call that does not change
 the workspace is counted against the state it ran on, so reading a file back after
@@ -405,7 +407,7 @@ c762903  Tetris clone          todo      running   step 7      write_file wrote 
 | `trace <id> [--last N] [--full] [--json]` | truncated by default |
 | `start <id> [--watch]` / `stop <id>` | the agent loop |
 | `mv <id> <column>` / `rm <id> [--keep-files]` | organize and delete |
-| `files <id> [--abs]` / `cat <id> <path>` | workspace output |
+| `files <id> [--all] [--abs]` / `cat <id> <path>` | workspace output |
 | `continue <id> --goal ...` | new goal, same workspace |
 | `retry <id> [--model ...]` | same brief, clean workspace |
 | `models` | what this server accepts for `--model` |

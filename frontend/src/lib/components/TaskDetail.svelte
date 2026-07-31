@@ -18,6 +18,10 @@
   let showContinue = $state(false);
   let copied = $state('');
 
+  // Subtasks of a breakdown share one workspace, so the listing holds their
+  // siblings' output too. The count is what this task itself wrote.
+  let mine = $derived(files.filter(f => f.owned));
+
   let running = $derived(task.status === 'running');
   let parent = $derived(task.parent_id ? tasks.find(t => t.id === task.parent_id) : null);
   let siblings = $derived(
@@ -166,14 +170,19 @@
   {/if}
 
   <div class="block files">
-    <h3 class="eyebrow">Output files · {files.length}</h3>
+    <h3 class="eyebrow">
+      Output files · {mine.length}{#if files.length > mine.length} · {files.length - mine.length} from siblings{/if}
+    </h3>
     {#if files.length === 0}
       <div class="no-files">Nothing written yet. Files appear here as the agent creates them.</div>
     {:else}
       <ul>
         {#each files as file (file.path)}
-          <li>
+          <li class:sibling={!file.owned}>
             <button class="file-path" onclick={() => open(file)} title="Open in a new tab">{file.path}</button>
+            {#if !file.owned}
+              <span class="file-owner" title="Written by another subtask sharing this workspace">sibling</span>
+            {/if}
             <span class="file-size">{file.size} B</span>
             <button class="btn tiny" onclick={() => open(file)}>Open</button>
             <button class="copy-btn" onclick={() => copyPath(file)} title={fileUrl(file.abs)}>
@@ -279,6 +288,18 @@
     align-items: center;
     gap: 8px;
     padding: 3px 0;
+  }
+  /* Still listed and still openable — the deliverable is often a sibling's
+     index page — but not counted as this task's work. */
+  .files li.sibling .file-path { color: var(--ink-3); }
+  .file-owner {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border: 1px solid var(--rule-soft);
+    border-radius: var(--r);
+    padding: 0 4px;
   }
   .file-path {
     flex: 1;

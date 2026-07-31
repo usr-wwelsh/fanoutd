@@ -146,6 +146,73 @@ func TestConcedeFailsWhenOnlyASiblingProduced(t *testing.T) {
 	}
 }
 
+// The listing is shared, so it has to say who wrote what. Without the flag every
+// subtask of a five-way breakdown reports the same seven files and none of them
+// says which two were its own.
+func TestWorkspaceFilesMarksWhoWroteWhat(t *testing.T) {
+	l, s := testLoop(t)
+	const group, workspace = "group-1", "workspace-1"
+
+	worker, err := s.CreateTaskFrom(store.NewTask{
+		Title: "plasma demo", Goal: "write it", GroupID: group, WorkspaceID: workspace,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskFrom: %v", err)
+	}
+	idler, err := s.CreateTaskFrom(store.NewTask{
+		Title: "particle demo", Goal: "write it", GroupID: group, WorkspaceID: workspace,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskFrom: %v", err)
+	}
+
+	writeWorkspaceFile(t, l, worker.ID, "plasma.js", "export function init() {}")
+	if owner, err := s.ClaimWrite(workspace, "plasma.js", worker.ID); err != nil || owner != "" {
+		t.Fatalf("ClaimWrite: owner=%q err=%v", owner, err)
+	}
+
+	mine, err := l.WorkspaceFiles(worker.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceFiles: %v", err)
+	}
+	if len(mine) != 1 || !mine[0].Owned {
+		t.Errorf("the writer does not own its own file: %+v", mine)
+	}
+
+	// The sibling still sees the file — it may well be the deliverable worth
+	// opening — but is not credited with it.
+	theirs, err := l.WorkspaceFiles(idler.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceFiles: %v", err)
+	}
+	if len(theirs) != 1 {
+		t.Fatalf("the shared workspace was hidden from the sibling: %+v", theirs)
+	}
+	if theirs[0].Owned {
+		t.Error("a sibling's file was credited to a task that did not write it")
+	}
+}
+
+// A task alone in its workspace wrote everything in it, and there are no claims
+// recorded for one — so ownership cannot be read off the claim table there.
+func TestWorkspaceFilesOwnsEverythingOutsideAGroup(t *testing.T) {
+	l, s := testLoop(t)
+
+	task, err := s.CreateTaskFrom(store.NewTask{Title: "solo", Goal: "write it"})
+	if err != nil {
+		t.Fatalf("CreateTaskFrom: %v", err)
+	}
+	writeWorkspaceFile(t, l, task.ID, "index.html", "<!doctype html>")
+
+	files, err := l.WorkspaceFiles(task.ID)
+	if err != nil {
+		t.Fatalf("WorkspaceFiles: %v", err)
+	}
+	if len(files) != 1 || !files[0].Owned {
+		t.Errorf("a solo task does not own its workspace: %+v", files)
+	}
+}
+
 func TestConcededSummaryPluralises(t *testing.T) {
 	one := concededSummary([]FileEntry{{Path: "a.html"}}, 12, "step limit")
 	if !strings.Contains(one, "1 file:") {

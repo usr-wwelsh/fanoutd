@@ -140,7 +140,10 @@ func (e *env) fillDetail(rows []taskRow) {
 				}
 			}
 			if files, err := e.client.Files(e.ctx, r.Task.ID); err == nil {
-				r.Files = len(files)
+				// What the task wrote, not what is in the workspace. Subtasks of
+				// one breakdown share a workspace, so counting the listing gave
+				// every row of a group the same total.
+				r.Files = len(ownedFiles(files))
 			}
 		}(&rows[i])
 	}
@@ -233,13 +236,22 @@ func cmdShow(e *env, args []string) error {
 	}
 	table(e.out, meta)
 
-	if len(files) > 0 {
-		fmt.Fprintf(e.out, "\n%s:\n", plural(len(files), "file"))
-		rows := make([][]string, 0, len(files))
-		for _, f := range files {
+	// Only this task's own files, so a subtask is not shown its siblings' output
+	// as if it had produced it. The rest of the shared workspace is a count and a
+	// pointer to `fanout files --all`, which is what you want when the thing you
+	// mean to open belongs to another subtask.
+	mine := ownedFiles(files)
+	if len(mine) > 0 {
+		fmt.Fprintf(e.out, "\n%s:\n", plural(len(mine), "file"))
+		rows := make([][]string, 0, len(mine))
+		for _, f := range mine {
 			rows = append(rows, []string{"  " + f.Path, humanSize(f.Size)})
 		}
 		table(e.out, rows)
+	}
+	if shared := len(files) - len(mine); shared > 0 {
+		fmt.Fprintf(e.out, "\n%s from sibling subtasks in the shared workspace (fanout files %s --all)\n",
+			plural(shared, "file"), shortID(task.ID))
 	}
 
 	if len(steps) > 0 {

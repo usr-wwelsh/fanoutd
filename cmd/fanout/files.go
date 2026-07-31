@@ -13,8 +13,9 @@ func cmdFiles(e *env, args []string) error {
 	fs := e.flags("files")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	abs := fs.Bool("abs", false, "print on-disk paths instead of workspace-relative ones")
+	all := fs.Bool("all", false, "include files written by sibling subtasks sharing the workspace")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: fanout files <id> [--abs] [--json]")
+		fmt.Fprintln(fs.Output(), "usage: fanout files <id> [--all] [--abs] [--json]")
 		fs.PrintDefaults()
 	}
 	id, err := e.resolve(fs, args)
@@ -25,23 +26,55 @@ func cmdFiles(e *env, args []string) error {
 	if err != nil {
 		return e.describeErr(err)
 	}
-	if *asJSON {
-		return writeJSON(e.out, files)
+
+	// The task's own files by default. A subtask of a breakdown shares its
+	// workspace, so the whole listing is its siblings' work as much as its own
+	// and answers "what did this produce?" with everyone's answer at once.
+	shown := files
+	if !*all {
+		shown = ownedFiles(files)
 	}
-	if len(files) == 0 {
+
+	if *asJSON {
+		return writeJSON(e.out, shown)
+	}
+	if len(shown) == 0 {
 		fmt.Fprintln(e.out, "no files")
+		if len(files) > 0 {
+			fmt.Fprintf(e.out, "%s in the shared workspace belong to sibling subtasks; --all lists them\n", plural(len(files), "file"))
+		}
 		return nil
 	}
-	rows := make([][]string, 0, len(files))
-	for _, f := range files {
+	rows := make([][]string, 0, len(shown))
+	for _, f := range shown {
 		name := f.Path
 		if *abs {
 			name = f.Abs
 		}
+		if *all && !f.Owned {
+			name += "  (sibling)"
+		}
 		rows = append(rows, []string{humanSize(f.Size), f.Modified.Local().Format(time.RFC3339), name})
 	}
 	table(e.out, rows)
+	if hidden := len(files) - len(shown); hidden > 0 {
+		fmt.Fprintf(e.out, "\n%s from sibling subtasks not shown (--all)\n", plural(hidden, "file"))
+	}
 	return nil
+}
+
+// ownedFiles keeps the entries a task actually wrote. A task alone in its
+// workspace owns all of them, so this only narrows anything for a subtask of a
+// breakdown — and an empty result there is the true answer, not a degraded one:
+// it is a subtask that produced nothing while its siblings produced plenty.
+func ownedFiles(files []models.FileEntry) []models.FileEntry {
+	out := make([]models.FileEntry, 0, len(files))
+	for _, f := range files {
+		if f.Owned {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func cmdCat(e *env, args []string) error {

@@ -157,6 +157,7 @@ backgrounded watch means read the trace, not retry blindly.
 ```bash
 fanout show <id>            # status, files, last steps
 fanout files <id>           # what it produced
+fanout files <id> --all     # the whole shared workspace, siblings marked
 fanout cat <id> <path>      # one file to stdout
 fanout trace <id> --last 5  # recent steps, truncated
 ```
@@ -176,6 +177,11 @@ Never copy out of `output/` by path: the workspace belongs to the server, which
 may not be this machine. `fanout files` lists seeded files alongside produced
 ones, so check the listing against what you seeded before reporting what a run
 made.
+
+Subtasks of a breakdown share one workspace. `fanout files <subtask>` shows only
+what that subtask wrote — use `--all` when the file you want belongs to a
+sibling, which for a group's deliverable it usually does. Report a group by its
+integration subtask, not by whichever one you happened to start from.
 
 ## When a run goes wrong
 

@@ -276,46 +276,65 @@ func (l *Loop) Workspace(taskID string) (*Workspace, error) {
 	return NewWorkspace(l.outputDir, workspaceID(task))
 }
 
-// WorkspaceFiles lists the files the agent has produced for a task.
+// WorkspaceFiles lists the files in a task's workspace, each marked with whether
+// this task is the one that wrote it.
 func (l *Loop) WorkspaceFiles(taskID string) ([]FileEntry, error) {
 	ws, err := l.Workspace(taskID)
 	if err != nil {
 		return nil, err
 	}
-	return ws.List()
+	files, err := ws.List()
+	if err != nil {
+		return nil, err
+	}
+	return l.markOwned(taskID, files)
 }
 
-// producedFiles narrows a workspace listing to the files this task itself
-// wrote. Subtasks of one breakdown share a workspace, so the raw listing credits
-// every sibling's output to whoever asks — which is the difference between
-// conceding to done and conceding to error. Ownership is only recorded for
-// grouped tasks, and a solo task has the workspace to itself, so for those the
-// listing already is what it produced.
+// markOwned records which of a listing's files the task wrote. Subtasks of one
+// breakdown share a workspace, so the raw listing credits every sibling's output
+// to whoever asks — five subtasks each reporting the same seven files, none of
+// which say which two were theirs. Ownership is only recorded for grouped tasks,
+// and a solo task has the workspace to itself, so for those everything in it is
+// its own.
+func (l *Loop) markOwned(taskID string, files []FileEntry) ([]FileEntry, error) {
+	task, err := l.store.GetTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	mine := map[string]bool{}
+	if task != nil && task.GroupID != "" {
+		owned, err := l.store.OwnedPaths(workspaceID(task), taskID)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range owned {
+			mine[p] = true
+		}
+	}
+
+	for i, f := range files {
+		if task == nil || task.GroupID == "" {
+			files[i].Owned = true
+			continue
+		}
+		key, ok := normalizeClaimPath(f.Path)
+		files[i].Owned = ok && mine[key]
+	}
+	return files, nil
+}
+
+// producedFiles narrows a workspace listing to the files this task itself wrote.
+// It is what separates conceding to done from conceding to error: a subtask that
+// looped without writing anything must not be credited with its siblings' work.
 func (l *Loop) producedFiles(taskID string) ([]FileEntry, error) {
 	files, err := l.WorkspaceFiles(taskID)
 	if err != nil {
 		return nil, err
 	}
-	task, err := l.store.GetTask(taskID)
-	if err != nil {
-		return nil, err
-	}
-	if task == nil || task.GroupID == "" {
-		return files, nil
-	}
-
-	owned, err := l.store.OwnedPaths(workspaceID(task), taskID)
-	if err != nil {
-		return nil, err
-	}
-	mine := make(map[string]bool, len(owned))
-	for _, p := range owned {
-		mine[p] = true
-	}
-
 	var out []FileEntry
 	for _, f := range files {
-		if key, ok := normalizeClaimPath(f.Path); ok && mine[key] {
+		if f.Owned {
 			out = append(out, f)
 		}
 	}
