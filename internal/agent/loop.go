@@ -159,6 +159,16 @@ func (l *Loop) startTracked(parent context.Context, taskID string) (<-chan struc
 	l.cancels[taskID] = cancel
 	l.mu.Unlock()
 
+	// Starting a task is an instruction to keep working on it, so it withdraws
+	// any standing "finished" mark. The loop treats that flag as a live stop
+	// signal and re-reads it every step, which is right for a task marked done
+	// on the board mid-run but made resuming impossible: a run that conceded
+	// with files was filed as finished, so every restart returned on step one
+	// and left the task running until the next server restart reclaimed it.
+	if err := l.store.ClearFinishFlag(taskID); err != nil {
+		l.clearRun(taskID)
+		return nil, err
+	}
 	if err := l.store.SetTaskColumn(taskID, "todo"); err != nil {
 		l.clearRun(taskID)
 		return nil, err

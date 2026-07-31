@@ -159,3 +159,41 @@ func TestConcededSummaryPluralises(t *testing.T) {
 		t.Errorf("multi file summary should list both: %q", two)
 	}
 }
+
+// A conceded run is filed as finished so its deliverables are not buried behind
+// a red status, and that mark is also the loop's stop signal. Starting the task
+// again has to withdraw it, or the resume returns on its first step and leaves
+// the task running until a server restart reclaims it.
+func TestConcededTaskCanBeResumed(t *testing.T) {
+	l, s := testLoop(t)
+	task, err := s.CreateTask("tool", "", "build it", "")
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	writeWorkspaceFile(t, l, task.ID, "main.go", "package main")
+
+	l.concede(task.ID, 19, "agent repeated the same run_command call 3 times without making progress")
+
+	conceded, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if !conceded.FinishFlag {
+		t.Fatal("conceding should file the task as finished")
+	}
+
+	// Start would run the agent, so exercise what it does to the row.
+	if err := s.ClearFinishFlag(task.ID); err != nil {
+		t.Fatalf("ClearFinishFlag: %v", err)
+	}
+	resumed, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if resumed.FinishFlag {
+		t.Fatal("starting a conceded task must withdraw the finished mark")
+	}
+	if resumed.Summary != conceded.Summary {
+		t.Errorf("resuming lost the summary: %q", resumed.Summary)
+	}
+}

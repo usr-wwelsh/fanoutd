@@ -321,6 +321,17 @@ func (s *Store) ClearTrace(taskID string) error {
 	return err
 }
 
+// ClearFinishFlag withdraws the "this task is finished" mark. The loop reads
+// that flag every step as a stop signal, so it has to be cleared when a run
+// starts or the run ends on its first step — which is what made a conceded task
+// impossible to resume, since conceding files the task through SetTaskFinished.
+func (s *Store) ClearFinishFlag(id string) error {
+	_, err := s.db.Exec(
+		"UPDATE tasks SET finish_flag=0, updated_at=? WHERE id=?", time.Now().UTC(), id,
+	)
+	return err
+}
+
 func (s *Store) SetTaskFinished(id, summary string) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
