@@ -60,7 +60,18 @@ File contents belong in the "content" string, JSON-escaped. To think without tou
 files, omit "tool".
 
 Never repeat an action you have already taken - the result is already in the conversation.
-Each step must make new progress.`
+Each step must make new progress.
+
+Whatever you write has to work where it lands, with no build step and nothing installed
+first. Nobody bundles it, serves it, or runs a package manager over it afterwards - a
+file that needs any of that is a file that does not run.
+
+For anything a browser opens this is the usual way a deliverable dies, and it dies
+silently: a page loaded from disk resolves its own imports, so "import * as X from 'lib'"
+resolves to nothing and the script stops on its first line with a blank window and no
+trace of why. Give every bare specifier a real URL, through an import map in the page or
+by importing the URL directly, or write plain scripts with no module imports at all. The
+page must work opened straight from the filesystem.`
 
 // shellPrompt is appended only when a sandbox exists. It is deliberately silent
 // about which languages are available: the toolchain is whatever the host has,
@@ -76,6 +87,10 @@ cd into it, and never mkdir it - use relative paths like "go build ./..." and le
 working directory be what it is.
 
 The sandbox has no network access, so anything that downloads dependencies will fail.
+This decides the shape of what you write, not just how you test it: a deliverable that
+needs a package installed before it will run is one you cannot run here. Depend on what
+is already on the machine, or vendor what you need into the workspace yourself.
+
 Only your workspace and /build are writable. Compiler and package caches already go
 outside the workspace, but a binary lands wherever you tell it to: build to /build, as in
 "go build -o /build/tool .", so your workspace keeps the source you were asked for rather

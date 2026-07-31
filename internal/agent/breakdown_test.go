@@ -6,16 +6,30 @@ import (
 	"testing"
 )
 
+// planOf wraps subtasks with a contract, so a test aimed at the partition is not
+// also asserting on the contract rule. The ones that mean to check that rule
+// build the plan themselves.
+func planOf(subs ...Subtask) *breakdownPlan {
+	return &breakdownPlan{Contract: "a.md holds the schema", Subtasks: subs}
+}
+
 func TestParseBreakdownReadsFencedJSON(t *testing.T) {
 	// The shape a model actually returns: a sentence, a fence, a language tag.
-	content := "Sure! Here is the split:\n\n```json\n" + `{"subtasks": [
+	content := "Sure! Here is the split:\n\n```json\n" + `{"contract": "schema.json holds {\"cells\": []}", "subtasks": [
   {"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "reads": []},
-  {"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"]}
+  {"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"], "integration": true}
 ]}` + "\n```\n"
 
-	subs, err := parseBreakdown(content)
+	plan, err := parseBreakdown(content)
 	if err != nil {
 		t.Fatalf("parseBreakdown: %v", err)
+	}
+	subs := plan.Subtasks
+	if plan.Contract == "" {
+		t.Error("the contract was dropped")
+	}
+	if !subs[1].Integration {
+		t.Error("the integration flag was dropped")
 	}
 	if len(subs) != 2 {
 		t.Fatalf("got %d subtasks, want 2: %+v", len(subs), subs)
@@ -38,11 +52,11 @@ func TestParseBreakdownSkipsIncidentalObjects(t *testing.T) {
 	  {"title": "b", "goal": "do b", "writes": ["b.md"]}
 	]}`
 
-	subs, err := parseBreakdown(content)
+	plan, err := parseBreakdown(content)
 	if err != nil {
 		t.Fatalf("parseBreakdown: %v", err)
 	}
-	if len(subs) != 2 || subs[0].Title != "a" {
+	if subs := plan.Subtasks; len(subs) != 2 || subs[0].Title != "a" {
 		t.Errorf("got %+v", subs)
 	}
 }
@@ -69,10 +83,11 @@ func TestParseBreakdownNormalizesPaths(t *testing.T) {
 	  {"title": "b", "goal": "g", "writes": ["dir/../d.js"]}
 	]}`
 
-	subs, err := parseBreakdown(content)
+	plan, err := parseBreakdown(content)
 	if err != nil {
 		t.Fatalf("parseBreakdown: %v", err)
 	}
+	subs := plan.Subtasks
 	// The repeat collapses, the leading slash and dot go, and the path that
 	// escapes the workspace is dropped rather than carried to a claim that
 	// would refuse it.
@@ -90,10 +105,11 @@ func TestParseBreakdownNormalizesPaths(t *testing.T) {
 func TestParseBreakdownTitlesFromGoal(t *testing.T) {
 	content := `{"subtasks": [{"goal": "write the schema for the board", "writes": ["a.json"]},
 	                          {"title": "b", "goal": "g", "writes": ["b.json"]}]}`
-	subs, err := parseBreakdown(content)
+	plan, err := parseBreakdown(content)
 	if err != nil {
 		t.Fatalf("parseBreakdown: %v", err)
 	}
+	subs := plan.Subtasks
 	// A missing label is not worth rejecting a good partition over.
 	if subs[0].Title != "write the schema for the board" {
 		t.Errorf("title = %q, want it derived from the goal", subs[0].Title)
@@ -102,10 +118,10 @@ func TestParseBreakdownTitlesFromGoal(t *testing.T) {
 
 // The failure the whole validation pass exists for.
 func TestValidateRejectsTwoWritersOfOnePath(t *testing.T) {
-	err := validateBreakdown([]Subtask{
-		{Title: "impl", Goal: "g", Writes: []string{"board.js", "util.js"}},
-		{Title: "tests", Goal: "g", Writes: []string{"board.js"}},
-	})
+	err := validateBreakdown(planOf(
+		Subtask{Title: "impl", Goal: "g", Writes: []string{"board.js", "util.js"}},
+		Subtask{Title: "tests", Goal: "g", Writes: []string{"board.js"}},
+	))
 	if err == nil {
 		t.Fatal("a contested path passed validation")
 	}
@@ -122,12 +138,12 @@ func TestValidateRejectsTwoWritersOfOnePath(t *testing.T) {
 }
 
 func TestValidateAcceptsACleanPartition(t *testing.T) {
-	err := validateBreakdown([]Subtask{
-		{Title: "schema", Goal: "g", Writes: []string{"schema.json"}},
-		{Title: "impl", Goal: "g", Writes: []string{"board.js"}, Reads: []string{"schema.json"}},
+	err := validateBreakdown(planOf(
+		Subtask{Title: "schema", Goal: "g", Writes: []string{"schema.json"}},
+		Subtask{Title: "impl", Goal: "g", Writes: []string{"board.js"}, Reads: []string{"schema.json"}},
 		// The integration node: it owns the shared file and reads its siblings.
-		{Title: "index", Goal: "g", Writes: []string{"index.html"}, Reads: []string{"board.js", "schema.json"}},
-	})
+		Subtask{Title: "index", Goal: "g", Writes: []string{"index.html"}, Reads: []string{"board.js", "schema.json"}, Integration: true},
+	))
 	if err != nil {
 		t.Errorf("a clean partition was rejected: %v", err)
 	}
@@ -152,7 +168,7 @@ func TestValidateRejectsUnschedulablePlans(t *testing.T) {
 		}, "no goal"},
 	}
 	for name, tc := range cases {
-		err := validateBreakdown(tc.subs)
+		err := validateBreakdown(planOf(tc.subs...))
 		if err == nil {
 			t.Errorf("%s: passed validation, want an error", name)
 			continue
@@ -168,7 +184,7 @@ func TestValidateRejectsTooManySubtasks(t *testing.T) {
 	for i := range subs {
 		subs[i] = Subtask{Title: "t", Goal: "g", Writes: []string{string(rune('a'+i)) + ".md"}}
 	}
-	if err := validateBreakdown(subs); err == nil {
+	if err := validateBreakdown(planOf(subs...)); err == nil {
 		t.Error("a plan past the subtask cap passed validation")
 	}
 }
@@ -177,11 +193,11 @@ func TestValidateRejectsTooManySubtasks(t *testing.T) {
 // caught here rather than in PlanGroup — the difference between spending a retry
 // and falling back to one serial task.
 func TestValidateRejectsCyclicReads(t *testing.T) {
-	err := validateBreakdown([]Subtask{
-		{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"b.md"}},
-		{Title: "b", Goal: "g", Writes: []string{"b.md"}, Reads: []string{"a.md"}},
-		{Title: "c", Goal: "g", Writes: []string{"c.md"}},
-	})
+	err := validateBreakdown(planOf(
+		Subtask{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"b.md"}},
+		Subtask{Title: "b", Goal: "g", Writes: []string{"b.md"}, Reads: []string{"a.md"}},
+		Subtask{Title: "c", Goal: "g", Writes: []string{"c.md"}},
+	))
 	if err == nil {
 		t.Fatal("a read cycle passed validation")
 	}
@@ -197,12 +213,71 @@ func TestValidateRejectsCyclicReads(t *testing.T) {
 
 // Reading what you also write is not an edge, so it cannot be a cycle either.
 func TestValidateAllowsSelfReads(t *testing.T) {
-	err := validateBreakdown([]Subtask{
-		{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"a.md"}},
-		{Title: "b", Goal: "g", Writes: []string{"b.md"}},
-	})
+	err := validateBreakdown(planOf(
+		Subtask{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"a.md"}},
+		Subtask{Title: "b", Goal: "g", Writes: []string{"b.md"}},
+	))
 	if err != nil {
 		t.Errorf("self-read rejected: %v", err)
+	}
+}
+
+// The failure this rule exists for: subtasks that read each other, each left to
+// invent the interface, producing parts that separately meet their goals and do
+// not fit together.
+func TestValidateRejectsASeamWithNoContract(t *testing.T) {
+	err := validateBreakdown(&breakdownPlan{Subtasks: []Subtask{
+		{Title: "world", Goal: "g", Writes: []string{"world.js"}},
+		{Title: "player", Goal: "g", Writes: []string{"player.js"}, Reads: []string{"world.js"}},
+	}})
+	if err == nil {
+		t.Fatal("a plan with a seam and no contract passed validation")
+	}
+	// Fed back to the model verbatim, so it has to say what to add.
+	if !strings.Contains(err.Error(), "contract") {
+		t.Errorf("error %q does not name the missing field", err)
+	}
+}
+
+// A partition whose parts never meet has no interface to agree on, and spending
+// the retry on one would only push a runnable plan towards the fallback.
+func TestValidateAllowsNoContractWhenNothingReads(t *testing.T) {
+	err := validateBreakdown(&breakdownPlan{Subtasks: []Subtask{
+		{Title: "a", Goal: "g", Writes: []string{"a.md"}},
+		{Title: "b", Goal: "g", Writes: []string{"b.md"}},
+	}})
+	if err != nil {
+		t.Errorf("independent subtasks rejected for want of a contract: %v", err)
+	}
+}
+
+func TestSubtaskContextCarriesTheContract(t *testing.T) {
+	const contract = "world.js exports setupWorld() -> { scene, camera }"
+
+	plain := subtaskContext("build a game", contract, false)
+	if !strings.Contains(plain, contract) {
+		t.Error("the contract did not reach the subtask description")
+	}
+	if !strings.Contains(plain, ideaPrefix) {
+		t.Error("the idea prefix was lost, so GroupIdea can no longer read it back")
+	}
+	if strings.Contains(plain, "integration subtask") {
+		t.Error("an ordinary subtask was given the integration brief")
+	}
+
+	// The one subtask that sees the assembled work is told to run it rather than
+	// to add to it.
+	if got := subtaskContext("build a game", contract, true); !strings.Contains(got, "integration subtask") {
+		t.Error("the integration subtask was not given its brief")
+	}
+}
+
+// GroupIdea reads the idea back off the first line of the description, so
+// whatever else is appended must not disturb that line.
+func TestGroupIdeaSurvivesTheContract(t *testing.T) {
+	desc := subtaskContext("build a katamari game", "index.html owns the canvas", true)
+	if got := GroupIdea(desc); got != "build a katamari game" {
+		t.Errorf("GroupIdea = %q", got)
 	}
 }
 

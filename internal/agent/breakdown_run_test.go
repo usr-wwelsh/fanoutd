@@ -90,10 +90,11 @@ func breakdownLoop(t *testing.T, replies ...string) (*Loop, *store.Store, *fakeB
 	return NewLoop(s, client, filepath.Join(dir, "output")), s, f
 }
 
-const goodPlan = `{"subtasks": [
+const goodPlan = `{"contract": "board.js exports mount(el) and reads schema.json for its cells",
+ "subtasks": [
   {"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "reads": []},
   {"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"]},
-  {"title": "page", "goal": "write the page", "writes": ["index.html"], "reads": ["board.js"]}
+  {"title": "page", "goal": "write the page", "writes": ["index.html"], "reads": ["board.js"], "integration": true}
 ]}`
 
 // Two subtasks writing board.js: the one failure the retry exists for.
@@ -331,10 +332,10 @@ func TestGroupIdeaIsRecoverableFromASubtask(t *testing.T) {
 func TestBuildGroupUnwindsAnUnschedulablePlan(t *testing.T) {
 	l, s, _ := breakdownLoop(t)
 
-	_, err := l.buildGroup(BreakdownRequest{Idea: "x"}, []Subtask{
-		{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"b.md"}},
-		{Title: "b", Goal: "g", Writes: []string{"b.md"}, Reads: []string{"a.md"}},
-	})
+	_, err := l.buildGroup(BreakdownRequest{Idea: "x"}, planOf(
+		Subtask{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"b.md"}},
+		Subtask{Title: "b", Goal: "g", Writes: []string{"b.md"}, Reads: []string{"a.md"}},
+	))
 	if err == nil {
 		t.Fatal("a cyclic plan was built, want it refused")
 	}

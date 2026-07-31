@@ -54,11 +54,13 @@ const breakdownPrompt = `You split one idea into subtasks that separate agents w
 
 Reply with a single JSON object and nothing else — no prose, no code fences:
 
-{"subtasks": [
+{"contract": "the exact interface every subtask must build against",
+ "subtasks": [
   {"title": "short label",
    "goal": "a complete, self-contained brief for one agent",
    "writes": ["path/it/creates.ext"],
-   "reads": ["path/a/sibling/creates.ext"]}
+   "reads": ["path/a/sibling/creates.ext"],
+   "integration": false}
 ]}
 
 The two file lists are the whole design. Decide them first and write the goals
@@ -71,6 +73,23 @@ second, because they carry both things that make a breakdown work:
   starts with that file already on disk. This is the only way to express order.
   Do not write "after step 2", do not number the subtasks, and do not describe
   dependencies in a goal. If B needs what A produced, B reads A's file.
+
+The contract is the third. The agents never speak to each other, so anything
+they must agree on has to be decided here, once, by you — otherwise each one
+invents its own version and the parts do not fit. Write it as a list of exact
+declarations, not as description:
+
+  src/world.js  exports setupWorld() -> { scene, camera, renderer }
+  src/player.js exports createPlayer(scene, camera) -> { mesh, update(dt) }
+                the camera is the one setupWorld returned; do not construct one
+  index.html    owns the single <canvas id="game-canvas">; modules render into
+                it and never append a canvas of their own
+
+Name every function, its arguments, its return shape, and the element or global
+each side expects. Where two subtasks could each reasonably build the same thing
+— a renderer, a camera, a config object, a database handle — say which one owns
+it and that the other receives it. Cover every path that appears in a "reads"
+list, and nothing else.
 
 Rules:
 - Between 2 and 6 subtasks. Split where the files split. If the idea produces
@@ -87,11 +106,15 @@ Rules:
 - One file that every subtask would otherwise touch — an index page, a router
   table, a manifest, a shared stylesheet — is not split. Give it to a single
   final integration subtask that writes it and reads the others' outputs. That
-  subtask runs last on its own, which is exactly what you want for it.
-- Each goal must stand on its own. The agent running it sees its goal and nothing
-  else: not the original idea, not its siblings, not their goals. So state what
-  it must build, what the files it reads will contain, and what the files it
-  writes must contain, in full, in every goal.
+  subtask runs last on its own, which is exactly what you want for it. Mark it
+  "integration": true, and mark nothing else: it is the only subtask that sees
+  the assembled work, so it is told to run the thing and fix what does not fit
+  rather than to add more of it. Leave the flag off or false everywhere else.
+- Each goal must stand on its own. The agent running it sees its goal and the
+  contract, and nothing else: not its siblings, not their goals. So state what it
+  must build, what the files it reads will contain, and what the files it writes
+  must contain, in full, in every goal. Do not restate the contract in a goal —
+  it is delivered whole to every subtask — but never contradict it either.
 
 Prefer a clean partition with fewer subtasks over a wide one that makes two
 agents share a file.`
@@ -102,6 +125,17 @@ type Subtask struct {
 	Goal   string   `json:"goal"`
 	Writes []string `json:"writes"`
 	Reads  []string `json:"reads"`
+	// Integration marks the subtask that assembles the others. It changes the
+	// brief it is given, not where it runs — the reads it declares already put
+	// it last.
+	Integration bool `json:"integration"`
+}
+
+// breakdownPlan is a whole reply: the partition, and the interface every part of
+// it is built against.
+type breakdownPlan struct {
+	Contract string    `json:"contract"`
+	Subtasks []Subtask `json:"subtasks"`
 }
 
 // BreakdownRequest is one idea to split. Title is only used if the split fails
@@ -131,11 +165,11 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 	}
 	req.Idea = idea
 
-	subs, err := l.planBreakdown(ctx, req)
+	plan, err := l.planBreakdown(ctx, req)
 	if err != nil {
 		return l.singleTask(req, err)
 	}
-	result, err := l.buildGroup(req, subs)
+	result, err := l.buildGroup(req, plan)
 	if err != nil {
 		return l.singleTask(req, err)
 	}
@@ -145,7 +179,7 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 // planBreakdown asks for a partition and gives the model exactly one chance to
 // repair a bad one, with the fault named. The conversation carries the rejected
 // plan so the correction is an edit rather than a fresh guess.
-func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) ([]Subtask, error) {
+func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakdownPlan, error) {
 	messages := []openrouter.MsgBlock{
 		{Role: "system", Content: breakdownPrompt},
 		{Role: "user", Content: "Idea: " + req.Idea + seedBrief(req.Seed) + "\n\nSplit it. Reply with the JSON object and nothing else."},
@@ -162,12 +196,12 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) ([]Subta
 			return nil, fmt.Errorf("breakdown call failed: %w", err)
 		}
 
-		subs, err := parseBreakdown(resp.Content)
+		plan, err := parseBreakdown(resp.Content)
 		if err == nil {
-			err = validateBreakdown(subs)
+			err = validateBreakdown(plan)
 		}
 		if err == nil {
-			return subs, nil
+			return plan, nil
 		}
 		last = err
 		messages = append(messages,
@@ -196,14 +230,12 @@ by dropping part of the work.`, err)
 // parseBreakdown reads the plan out of the reply. Models fence their JSON and
 // narrate around it, which the step parser already deals with; this reuses that
 // scan, keyed on the field a breakdown carries instead.
-func parseBreakdown(content string) ([]Subtask, error) {
+func parseBreakdown(content string) (*breakdownPlan, error) {
 	body, ok := extractJSONWith(content, breakdownKeys)
 	if !ok {
 		return nil, fmt.Errorf("the reply held no breakdown object")
 	}
-	var parsed struct {
-		Subtasks []Subtask `json:"subtasks"`
-	}
+	var parsed breakdownPlan
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return nil, fmt.Errorf("the breakdown was not valid JSON: %v", err)
 	}
@@ -223,7 +255,7 @@ func parseBreakdown(content string) ([]Subtask, error) {
 		}
 		subs = append(subs, s)
 	}
-	return subs, nil
+	return &breakdownPlan{Contract: strings.TrimSpace(parsed.Contract), Subtasks: subs}, nil
 }
 
 // normalizePaths renders each path the way a claim will be keyed and drops the
@@ -261,7 +293,8 @@ func normalizeClaimPath(p string) (string, bool) {
 // validateBreakdown rejects a plan that cannot be run, phrasing the failure for
 // the model rather than for a log: every message here is fed back verbatim in
 // the retry, so it names the subtasks and paths at fault.
-func validateBreakdown(subs []Subtask) error {
+func validateBreakdown(plan *breakdownPlan) error {
+	subs := plan.Subtasks
 	if len(subs) == 0 {
 		return fmt.Errorf("the plan held no subtasks")
 	}
@@ -294,6 +327,24 @@ func validateBreakdown(subs []Subtask) error {
 	if titles := cycleTitles(subs); len(titles) > 0 {
 		return fmt.Errorf("the reads run in a circle, so nothing can go first: %s. One of them must start from files no other subtask writes",
 			strings.Join(quoteAll(titles), ", "))
+	}
+	return validateContract(plan)
+}
+
+// validateContract demands an interface only where two subtasks actually meet.
+// A partition whose parts never read each other has no seam to get wrong, and
+// rejecting it for a missing string would spend the retry — and then the
+// fallback — on a plan that was already runnable.
+func validateContract(plan *breakdownPlan) error {
+	seam := false
+	for _, s := range plan.Subtasks {
+		if len(s.Reads) > 0 {
+			seam = true
+			break
+		}
+	}
+	if seam && plan.Contract == "" {
+		return fmt.Errorf("subtasks read each other's files but the plan has no \"contract\", so each one would have to guess at the interface. Declare it: for every path in a \"reads\" list, the exact functions or data it exposes and who owns anything both sides could otherwise build for themselves")
 	}
 	return nil
 }
@@ -377,9 +428,10 @@ func quoteAll(in []string) []string {
 // claims that make it a schedule. Nothing is left half-built — if the graph will
 // not resolve, every task created here is deleted before returning, so the
 // caller's fallback starts from a clean board.
-func (l *Loop) buildGroup(req BreakdownRequest, subs []Subtask) (*models.BreakdownResult, error) {
+func (l *Loop) buildGroup(req BreakdownRequest, plan *breakdownPlan) (*models.BreakdownResult, error) {
 	groupID, workspaceID := store.NewID(), store.NewID()
 	created := []models.Task{}
+	subs := plan.Subtasks
 
 	unwind := func() {
 		for _, t := range created {
@@ -394,7 +446,7 @@ func (l *Loop) buildGroup(req BreakdownRequest, subs []Subtask) (*models.Breakdo
 	for _, sub := range subs {
 		task, err := l.store.CreateTaskFrom(store.NewTask{
 			Title:       sub.Title,
-			Description: subtaskContext(req.Idea),
+			Description: subtaskContext(req.Idea, plan.Contract, sub.Integration),
 			Goal:        sub.Goal,
 			Model:       req.Model,
 			WorkspaceID: workspaceID,
@@ -425,7 +477,7 @@ func (l *Loop) buildGroup(req BreakdownRequest, subs []Subtask) (*models.Breakdo
 	// Resolve the graph before anything runs. This is the cycle check the
 	// scheduler would do at StartGroup, done early enough that failing it costs
 	// no tokens.
-	plan, err := l.PlanGroup(groupID)
+	graph, err := l.PlanGroup(groupID)
 	if err != nil {
 		unwind()
 		return nil, err
@@ -443,8 +495,8 @@ func (l *Loop) buildGroup(req BreakdownRequest, subs []Subtask) (*models.Breakdo
 		Tasks:   created,
 		Plan: &models.GroupPlan{
 			GroupID: groupID,
-			Waves:   plan.Waves,
-			Deps:    plan.Deps,
+			Waves:   graph.Waves,
+			Deps:    graph.Deps,
 			Tasks:   created,
 		},
 	}
@@ -473,13 +525,52 @@ const ideaPrefix = "This is one part of a larger idea, split across subtasks run
 // subtaskContext reaches the model as "Details:". It says plainly that the rest
 // of the idea belongs to somebody else — an agent that can see the whole idea
 // will try to build the whole idea, and then lose every file it does not own.
-func subtaskContext(idea string) string {
-	return fmt.Sprintf(
-		"%s%s\n"+
-			"Do only what your goal above names. Sibling subtasks own the rest, and files belonging to them are refused if you try to write them.",
-		ideaPrefix, truncate(idea, 400),
-	)
+//
+// The contract goes to every subtask unchanged. It is the only thing they all
+// see, which is what makes it the place to settle anything two of them would
+// otherwise each decide for themselves.
+func subtaskContext(idea, contract string, integration bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s\n", ideaPrefix, truncate(idea, 400))
+	b.WriteString("Do only what your goal above names. Sibling subtasks own the rest, and files belonging to them are refused if you try to write them.")
+
+	if contract != "" {
+		b.WriteString("\n\nInterface contract, agreed for every subtask before any of them started. " +
+			"Where it and your goal disagree, the contract wins; where it is silent, your goal decides. " +
+			"Do not build something it says another subtask owns — take what you are given:\n\n")
+		b.WriteString(truncate(contract, contractBudget))
+	}
+	if integration {
+		b.WriteString(integrationBrief)
+	}
+	return b.String()
 }
+
+// contractBudget caps the contract carried in every subtask's description. It is
+// an interface, not a specification; one longer than this is prose that has
+// stopped being checkable.
+const contractBudget = 2000
+
+// integrationBrief is appended for the subtask that assembles the others. It is
+// the only one that ever sees the whole thing built, and the failure it exists to
+// catch is not a missing feature — it is four parts that each met their own goal
+// and do not fit together. So it is pointed at the seams, and told that finding
+// nothing to add is a finished job rather than an unfinished one.
+const integrationBrief = `
+
+You are the integration subtask: the parts are already written and you are the first
+to see them together. Your job is to make them run as one thing, not to extend them.
+
+Read every file you depend on before you write anything, and check it against the
+contract rather than against what you would have written. Where two parts disagree,
+change the one the contract says is wrong. Where both are wrong, change both.
+
+Then actually run it, by whatever means you have — build it, execute it, load it.
+A deliverable nobody has run is the thing you are here to prevent. If it cannot run
+at all, that is the bug, and it outranks everything else on your list.
+
+Add no features, no polish, and no files beyond the ones your goal names. Finishing
+with the pieces wired together and working is the whole of the goal.`
 
 // GroupIdea recovers the idea a subtask was split from, for a caller that wants
 // to label the group rather than its parts. It returns "" for anything this

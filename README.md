@@ -62,11 +62,22 @@ One model call turns the idea into subtasks, each with a goal and the paths it
   writes, B waits for A. A model asked for a dependency list produces something
   plausible and wrong; the same model asked which files a subtask touches is
   answering about the work itself.
+- **The contract.** The same call returns the interface the parts meet at —
+  exported functions, their arguments and return shapes, and who owns anything
+  two subtasks could each reasonably build. It goes to every subtask verbatim.
+  The agents never speak to each other, so whatever is not settled here is
+  settled five times over: left to themselves, one subtask builds a renderer and
+  a camera, the next builds its own camera, and both meet their goals while the
+  result does not run. A plan whose subtasks read each other and carries no
+  contract is sent back.
 
 The subtasks share one workspace, so there is no merge step. A file every
 subtask would need — an index, a manifest, a shared stylesheet — is not split:
 it goes to a final integration subtask that owns it and reads its siblings'
-outputs, which serializes it last through the same topological sort.
+outputs, which serializes it last through the same topological sort. That
+subtask is briefed differently from the rest: it is the only one that ever sees
+the whole thing assembled, so it is told to run it and reconcile it against the
+contract rather than to add anything of its own.
 
 A plan where two subtasks write one path is rejected in memory, and re-planned
 once with the conflict named. Still conflicting, or unreachable, or cyclic, and
