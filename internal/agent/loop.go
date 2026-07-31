@@ -361,12 +361,14 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		return
 	}
 
-	// Repetition counters carry over from earlier runs of the same task so a
-	// stop/start cycle cannot be used to loop forever.
+	// Repetition is counted per run rather than across the task's whole history.
+	// Every key below carries the workspace fingerprint, and the fingerprint a
+	// step ran at is not recorded, so there is nothing from an earlier run to
+	// count against. Nor is there much point: a resumed run that genuinely loops
+	// still trips the limit within its own steps, and seeding the counters from
+	// the trace made resuming a conceded task useless — it aborted on the first
+	// step that echoed anything it had said before.
 	seen := map[string]int{}
-	for _, ts := range prior {
-		seen[normalize(ts.Action)]++
-	}
 
 	step := len(prior)
 	parseFailures := 0
@@ -450,14 +452,18 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		action := result.Action
 		logged := loggedAction(action, result.Tool)
 
+		// What makes a repeat a loop is that nothing moved between the two
+		// attempts, so every key that is not itself a change to the workspace is
+		// qualified by the state it ran against. Re-reading a file you just
+		// edited, or re-running the tests that caught a bug, is the loop working
+		// as intended and must not be aborted — that is the one case where the
+		// agent is converging.
+		fingerprint := ws.Fingerprint()
+
 		if result.Tool != nil {
 			key := "tool\x00" + result.Tool.signature()
-			// A command is judged against the files it runs on, not on its text
-			// alone. Re-running the tests after fixing what they caught is the
-			// loop working as intended; without this the guard aborts an agent
-			// that is converging, which is the one case it should leave alone.
-			if result.Tool.Name == execTool {
-				key += "\x00" + ws.Fingerprint()
+			if !mutatingTool(result.Tool.Name) {
+				key += "\x00" + fingerprint
 			}
 			seen[key]++
 			if seen[key] >= repeatLimit {
@@ -470,6 +476,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		// Only count actions the model actually wrote. A synthesized label
 		// describes the call, which the tool signature above already covers.
 		if key := normalize(action); key != "" && !result.Synthesized {
+			key += "\x00" + fingerprint
 			seen[key]++
 			if seen[key] >= repeatLimit {
 				l.store.AddTraceStep(taskID, step, logged, "", result.Text, "", "aborted: identical action repeated")

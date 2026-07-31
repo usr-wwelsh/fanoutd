@@ -135,9 +135,19 @@ The agent gets a sandboxed workspace at `output/<task-id>/` and these tools:
 | `list_files` | — | List the workspace |
 | `run_command` | `command` | Run a shell command in the workspace (only with `FANOUT_SHELL=1`) |
 
-Paths are relative and resolved inside the workspace; absolute paths and `..` escapes are
-rejected. The files the agent produces are listed in the task detail panel and live on
-disk under `output/`.
+Paths are relative and resolved inside the workspace; `..` escapes are rejected. An
+absolute path is folded back onto the root, since the model is shown its workspace
+directory in full and routinely answers with one — including, sometimes, a near miss at
+the id, which is read as the path inside the workspace rather than recreated as a
+directory tree under it.
+
+The files the agent produces are listed in the task detail panel and live on disk under
+`output/`.
+
+Repeating yourself ends a run, but only when nothing moved: a call that does not change
+the workspace is counted against the state it ran on, so reading a file back after
+editing it, or re-running the tests that caught a bug, is progress rather than a loop.
+Writing the same bytes to the same path is a repeat regardless.
 
 ## Shell commands
 

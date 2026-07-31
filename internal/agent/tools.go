@@ -99,6 +99,18 @@ func ToolDefs(sandboxed bool) []openrouter.Tool {
 	return tools
 }
 
+// mutatingTool reports whether a call changes the workspace itself. Those are
+// judged on their arguments alone: writing the same bytes to the same path three
+// times is a loop however much else has moved. Every other call is judged
+// against the files it ran on, since its result is a function of them.
+func mutatingTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "write_file", "edit_file", "delete_file":
+		return true
+	}
+	return false
+}
+
 func (t *ToolCall) signature() string {
 	// The command is part of the signature, so re-running an identical command
 	// without changing anything counts against the repeat limit — which is the
@@ -183,11 +195,20 @@ func (w *Workspace) resolve(rel string) (string, error) {
 	}
 	if filepath.IsAbs(rel) {
 		clean := filepath.Clean(rel)
-		if inner, err := filepath.Rel(w.root, clean); err == nil && !strings.HasPrefix(inner, "..") {
+		switch inner, err := filepath.Rel(w.root, clean); {
+		case err == nil && !strings.HasPrefix(inner, ".."):
 			rel = inner
-		} else {
-			// An absolute path outside the workspace is read as workspace-relative
-			// instead of escaping it; the containment check below still applies.
+		case siblingTail(w.root, clean) != "":
+			// The workspace root is a long random id and the model is shown it in
+			// full, so it sometimes echoes back a near miss — a dropped character,
+			// a truncation. That names a sibling workspace, and folding the whole
+			// string in creates output/<id>/home/user/.../src/thing.js: a file
+			// nobody asked for, at a path nothing else in the plan will read.
+			// Reading it as the path within a workspace is what was meant.
+			rel = siblingTail(w.root, clean)
+		default:
+			// Any other absolute path is read as workspace-relative instead of
+			// escaping; the containment check below still applies.
 			rel = strings.TrimPrefix(clean, string(os.PathSeparator))
 		}
 		if rel == "" || rel == "." {
@@ -199,6 +220,23 @@ func (w *Workspace) resolve(rel string) (string, error) {
 		return "", fmt.Errorf("path escapes the workspace")
 	}
 	return full, nil
+}
+
+// siblingTail reads an absolute path that points into a different workspace
+// under the same output directory and returns the part after that workspace's
+// id, or "" when the path is not of that shape. The id itself is not checked
+// against anything: whatever sits directly under the output directory is a
+// workspace, and one that does not exist is a misspelling of the one that does.
+func siblingTail(root, clean string) string {
+	rest, err := filepath.Rel(filepath.Dir(root), clean)
+	if err != nil || strings.HasPrefix(rest, "..") {
+		return ""
+	}
+	_, tail, ok := strings.Cut(rest, string(os.PathSeparator))
+	if !ok {
+		return ""
+	}
+	return tail
 }
 
 // resolveOwned resolves rel and takes the write claim on it, returning the
@@ -385,7 +423,20 @@ func (w *Workspace) writeFile(rel, content string) (string, error) {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("wrote %s (%d bytes)", rel, len(content)), nil
+	return fmt.Sprintf("wrote %s (%d bytes)", w.display(full), len(content)), nil
+}
+
+// display renders a resolved path the way the workspace actually holds it. The
+// result is the only place the model learns where its file went, so echoing back
+// what it typed hides every fold resolve performs: a write to an absolute path
+// answered "wrote /home/...", and the read that followed went looking for
+// exactly that.
+func (w *Workspace) display(full string) string {
+	rel, err := filepath.Rel(w.root, full)
+	if err != nil {
+		return full
+	}
+	return rel
 }
 
 func (w *Workspace) readFile(rel string, offset int) (string, error) {
@@ -455,7 +506,7 @@ func (w *Workspace) editFile(rel, old, new string) (string, error) {
 	if err := os.WriteFile(full, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s (%d bytes)", rel, len(updated)), nil
+	return fmt.Sprintf("edited %s (%d bytes)", w.display(full), len(updated)), nil
 }
 
 func (w *Workspace) deleteFile(rel string) (string, error) {
@@ -469,7 +520,7 @@ func (w *Workspace) deleteFile(rel string) (string, error) {
 	if err := os.Remove(full); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("deleted %s", rel), nil
+	return fmt.Sprintf("deleted %s", w.display(full)), nil
 }
 
 // FileEntry lives in models because the CLI reports workspace listings too, and

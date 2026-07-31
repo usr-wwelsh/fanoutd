@@ -231,6 +231,11 @@ func TestResolveContainsPaths(t *testing.T) {
 		filepath.Join(root, "src", "a.md"): filepath.Join(root, "src", "a.md"),
 		// An absolute path outside the workspace is read as workspace-relative.
 		"/etc/passwd": filepath.Join(root, "etc", "passwd"),
+		// A near miss at the workspace id — the model is shown the root in full
+		// and sometimes echoes it back short a character. That names a sibling
+		// workspace, and folding the whole string in would bury the file at
+		// <root>/home/user/.../src/a.md, where nothing else in the plan reads it.
+		filepath.Join(filepath.Dir(root), "0bad", "src", "a.md"): filepath.Join(root, "src", "a.md"),
 	}
 	for rel, want := range inside {
 		got, err := ws.resolve(rel)
