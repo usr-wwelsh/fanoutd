@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -149,10 +150,23 @@ func isUnsupportedFormat(err error) bool {
 }
 
 // rateLimitRetries is how many extra attempts a 429 gets, on top of the first.
-const rateLimitRetries = 4
+const rateLimitRetries = 5
 
-// rateLimitBackoff is the delay before the first retry; it doubles each time.
+// rateLimitBackoff is the delay before the first retry when the refusal came
+// with no hint about when to come back; it doubles each time.
 const rateLimitBackoff = time.Second
+
+// rateLimitMaxWait caps a single wait. The free tier's limit is per minute and
+// resets on a wall-clock boundary, so a hint just under a minute out is normal
+// and worth honouring — but a provider naming an hour is telling us to stop, not
+// to sleep through the run.
+const rateLimitMaxWait = 75 * time.Second
+
+// rateLimitJitter spreads the retries of agents that were refused together. A
+// breakdown runs subtasks in parallel against one key, so they hit the limit in
+// the same second and are handed the same reset instant; without this they all
+// wake at once and the first one through takes the window again.
+const rateLimitJitter = 2 * time.Second
 
 // attemptResult is one round trip. A non-2xx carries its body so the caller can
 // build the error message; a 200 carries the assembled turn.
@@ -160,7 +174,10 @@ type attemptResult struct {
 	result     *Result
 	status     int
 	retryAfter string
-	body       string
+	// resetAt is the X-RateLimit-Reset header: the instant the current window
+	// ends, which is the only useful hint OpenRouter gives on a free-tier 429.
+	resetAt string
+	body    string
 }
 
 // post sends the request body, retrying a 429 with exponential backoff. Rate
@@ -177,21 +194,113 @@ func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
 		if got.status == http.StatusOK {
 			return got.result, nil
 		}
-		if got.status != http.StatusTooManyRequests || attempt >= rateLimitRetries {
+		if got.status != http.StatusTooManyRequests {
 			return nil, fmt.Errorf("openrouter error %d: %s", got.status, got.body)
+		}
+		if attempt >= rateLimitRetries {
+			// Say plainly that waiting was tried, so the trace does not read as a
+			// run that gave up on the first refusal.
+			return nil, fmt.Errorf("still rate limited after %d retries: %s", attempt, got.body)
 		}
 
 		wait := delay
-		if hinted, ok := parseRetryAfter(got.retryAfter); ok {
+		if hinted, ok := retryHint(got); ok {
 			wait = hinted
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(wait):
+		case <-time.After(wait + jitter()):
 		}
 		delay *= 2
 	}
+}
+
+// retryHint reads when the provider says to come back, in the three places it
+// might say so. Retry-After is the standard one and nobody sends it here;
+// X-RateLimit-Reset is what OpenRouter actually sets; and on a free-tier refusal
+// the headers are also copied into the error body, which is the only copy that
+// survives some proxies. Without any of them the caller falls back to doubling a
+// second, which gives up about fifteen seconds into a window that resets on the
+// minute — the whole reason a routine rate limit was killing runs.
+func retryHint(got attemptResult) (time.Duration, bool) {
+	if d, ok := parseRetryAfter(got.retryAfter); ok {
+		return d, true
+	}
+	if d, ok := parseResetAt(got.resetAt); ok {
+		return d, true
+	}
+	return parseResetAt(resetFromBody(got.body))
+}
+
+// resetFromBody digs the reset out of the error envelope OpenRouter returns:
+// {"error":{"metadata":{"headers":{"X-RateLimit-Reset":"1785537420000"}}}}.
+func resetFromBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	var parsed struct {
+		Error struct {
+			Metadata struct {
+				Headers map[string]string `json:"headers"`
+			} `json:"metadata"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return ""
+	}
+	for k, v := range parsed.Error.Metadata.Headers {
+		if strings.EqualFold(k, "X-RateLimit-Reset") {
+			return v
+		}
+	}
+	return ""
+}
+
+// parseResetAt reads a rate-limit reset. The value is an instant, not a delay,
+// and its unit is left to the provider — so it is read as milliseconds, seconds,
+// or a plain delay according to its magnitude, which is the only way to tell an
+// epoch from a duration.
+func parseResetAt(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+
+	var d time.Duration
+	switch {
+	case n > 1e12: // epoch milliseconds
+		d = time.Until(time.UnixMilli(n))
+	case n > 1e9: // epoch seconds
+		d = time.Until(time.Unix(n, 0))
+	default: // a delay in seconds
+		d = time.Duration(n) * time.Second
+	}
+	return clampWait(d)
+}
+
+// clampWait rejects a hint that has already passed or reaches past the point of
+// waiting. A window that closed while the response was in flight is not an
+// error: the caller retries immediately, which is what a zero-length wait means.
+func clampWait(d time.Duration) (time.Duration, bool) {
+	if d > rateLimitMaxWait {
+		return 0, false
+	}
+	if d < 0 {
+		d = 0
+	}
+	return d, true
+}
+
+// jitter is a small random spread, never negative, so simultaneous waiters do
+// not resume in lockstep. It is a variable so a test measuring which wait was
+// chosen is not measuring the spread on top of it.
+var jitter = func() time.Duration {
+	return time.Duration(rand.Int63n(int64(rateLimitJitter)))
 }
 
 // attempt runs one streaming request. The response is consumed as it arrives so
@@ -224,6 +333,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (attemptResult, error
 		return attemptResult{
 			status:     resp.StatusCode,
 			retryAfter: resp.Header.Get("Retry-After"),
+			resetAt:    resp.Header.Get("X-RateLimit-Reset"),
 			body:       strings.TrimSpace(string(errBody)),
 		}, nil
 	}
@@ -263,10 +373,7 @@ func parseRetryAfter(v string) (time.Duration, bool) {
 	} else {
 		return 0, false
 	}
-	if d <= 0 || d > time.Minute {
-		return 0, false
-	}
-	return d, true
+	return clampWait(d)
 }
 
 func (c *Client) send(ctx context.Context, messages []MsgBlock, opts ChatOptions, jsonMode bool) (*Result, error) {

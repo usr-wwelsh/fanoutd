@@ -1,0 +1,221 @@
+package openrouter
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// The refusal a free-tier key actually gets. There is no Retry-After header on
+// it: the only hint is X-RateLimit-Reset, in epoch milliseconds, and OpenRouter
+// copies it into the error body as well as the headers.
+func rateLimitBody(resetAt time.Time) string {
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": "Rate limit exceeded: free-models-per-min. ",
+			"code":    429,
+			"metadata": map[string]any{
+				"headers": map[string]string{
+					"X-RateLimit-Limit":     "20",
+					"X-RateLimit-Remaining": "0",
+					"X-RateLimit-Reset":     fmt.Sprint(resetAt.UnixMilli()),
+				},
+				"limit_source": "openrouter_free_tier_per_minute",
+			},
+		},
+	})
+	return string(body)
+}
+
+func okStream(content string) string {
+	frame, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": content}}},
+	})
+	return fmt.Sprintf("data: %s\n\ndata: [DONE]\n\n", frame)
+}
+
+// limiter refuses the first n requests with a 429 and serves the rest.
+type limiter struct {
+	mu sync.Mutex
+	// refusals is how many 429s are left to serve.
+	refusals int
+	// sendHeader controls whether the reset is advertised as a response header
+	// as well as in the body.
+	sendHeader bool
+	reset      time.Time
+	calls      int
+}
+
+func (l *limiter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	l.mu.Lock()
+	l.calls++
+	refuse := l.refusals > 0
+	if refuse {
+		l.refusals--
+	}
+	l.mu.Unlock()
+
+	if refuse {
+		if l.sendHeader {
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprint(l.reset.UnixMilli()))
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, rateLimitBody(l.reset))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, okStream("hello"))
+}
+
+func (l *limiter) seen() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
+}
+
+// noJitter pins the random spread to zero, so a test can measure which wait was
+// chosen rather than the spread laid on top of it.
+func noJitter(t *testing.T) {
+	t.Helper()
+	prev := jitter
+	jitter = func() time.Duration { return 0 }
+	t.Cleanup(func() { jitter = prev })
+}
+
+func TestChatWaitsOutARateLimit(t *testing.T) {
+	noJitter(t)
+	lim := &limiter{refusals: 2, reset: time.Now().Add(150 * time.Millisecond)}
+	srv := httptest.NewServer(lim)
+	defer srv.Close()
+
+	c := NewClient("k", "m", srv.URL)
+	start := time.Now()
+	res, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if res.Content != "hello" {
+		t.Errorf("content = %q", res.Content)
+	}
+	if lim.seen() != 3 {
+		t.Errorf("made %d requests, want 3 (two refused, one served)", lim.seen())
+	}
+	// Both waits came from the reset in the body, not from the backoff — the
+	// fallback's first two delays alone would be three seconds.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("waited %s, want the hinted reset rather than the backoff", elapsed)
+	}
+}
+
+// The header is the documented place to look; the body copy is the fallback.
+// Either alone has to be enough.
+func TestRateLimitResetIsReadFromTheHeaderToo(t *testing.T) {
+	lim := &limiter{refusals: 1, sendHeader: true, reset: time.Now().Add(100 * time.Millisecond)}
+	srv := httptest.NewServer(lim)
+	defer srv.Close()
+
+	c := NewClient("k", "m", srv.URL)
+	if _, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if lim.seen() != 2 {
+		t.Errorf("made %d requests, want 2", lim.seen())
+	}
+}
+
+// A limit that never lifts still has to end, and say what it was.
+func TestChatGivesUpOnAPermanentRateLimit(t *testing.T) {
+	lim := &limiter{refusals: 1000, reset: time.Now().Add(20 * time.Millisecond)}
+	srv := httptest.NewServer(lim)
+	defer srv.Close()
+
+	c := NewClient("k", "m", srv.URL)
+	_, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
+	if err == nil {
+		t.Fatal("a permanent rate limit returned success")
+	}
+	if !strings.Contains(err.Error(), "still rate limited") {
+		t.Errorf("error %q does not say the wait was tried", err)
+	}
+	if lim.seen() != rateLimitRetries+1 {
+		t.Errorf("made %d requests, want %d", lim.seen(), rateLimitRetries+1)
+	}
+}
+
+// Cancelling a task must not have to sit through the wait first.
+func TestRateLimitWaitHonoursCancellation(t *testing.T) {
+	lim := &limiter{refusals: 1000, reset: time.Now().Add(30 * time.Second)}
+	srv := httptest.NewServer(lim)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewClient("k", "m", srv.URL)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Chat(ctx, []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a cancelled call returned success")
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the wait outlived its context")
+	}
+}
+
+func TestParseResetAt(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"epoch milliseconds", fmt.Sprint(now.Add(30 * time.Second).UnixMilli()), 30 * time.Second, true},
+		{"epoch seconds", fmt.Sprint(now.Add(30 * time.Second).Unix()), 30 * time.Second, true},
+		{"a plain delay", "12", 12 * time.Second, true},
+		// The window closed while the response was in flight: retry at once
+		// rather than treating a stale hint as no hint.
+		{"already past", fmt.Sprint(now.Add(-5 * time.Second).UnixMilli()), 0, true},
+		{"too far out", fmt.Sprint(now.Add(time.Hour).UnixMilli()), 0, false},
+		{"empty", "", 0, false},
+		{"not a number", "soon", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseResetAt(tt.in)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			// Wall-clock arithmetic, so compare loosely.
+			if ok && (got < tt.want-time.Second || got > tt.want+time.Second) {
+				t.Errorf("got %s, want about %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResetFromBody(t *testing.T) {
+	at := time.Now().Add(time.Minute)
+	if got := resetFromBody(rateLimitBody(at)); got != fmt.Sprint(at.UnixMilli()) {
+		t.Errorf("resetFromBody = %q, want %d", got, at.UnixMilli())
+	}
+	for _, body := range []string{"", "not json", `{"error":{}}`, `{"error":{"metadata":{}}}`} {
+		if got := resetFromBody(body); got != "" {
+			t.Errorf("resetFromBody(%q) = %q, want empty", body, got)
+		}
+	}
+}

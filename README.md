@@ -273,6 +273,20 @@ whatever machine you type from, not next to the server.
 | `FANOUT_ENV_FILE` | *(see below)* | Override the settings file location |
 | `OPENROUTER_BASE_URL` | OpenRouter | Override the API base URL (testing) |
 
+### Rate limits
+
+The default model is a free one, and the free tier is capped per minute across
+the whole key — which a breakdown running three subtasks at once reaches easily.
+A 429 is waited out rather than failed: the client retries five times, sleeping
+until the reset OpenRouter names in `X-RateLimit-Reset` (it sends no
+`Retry-After`, and on the free tier the reset is in the error body as well as the
+headers), plus a small random spread so subtasks refused together do not all wake
+at the same instant and collide again. Only a limit that outlasts all five ends
+the run, and it says so.
+
+Lower `FANOUT_MAX_PARALLEL` if you see it often; a paid model has far higher
+limits and is the other way out.
+
 ### Paths
 
 Nothing resolves against the working directory. `FANOUT_DATA_DIR` defaults to
