@@ -5,6 +5,7 @@
   import { createEventDispatcher } from 'svelte';
   import { fetchGroupPlan, startGroup, stopGroup } from '../api.js';
   import PlanGraph from './PlanGraph.svelte';
+  import PlanMinimap from './PlanMinimap.svelte';
 
   let { tasks, selectedId } = $props();
 
@@ -13,6 +14,7 @@
   let plans = $state({});
   let errors = $state({});
   let busy = $state('');
+  let root = $state(null);
 
   let grouped = $derived.by(() => {
     const map = new Map();
@@ -72,12 +74,12 @@
   }
 </script>
 
-<div class="plan-view">
+<div class="plan-view" id="plan-view" bind:this={root}>
   {#each grouped.groups as group (group.id)}
     {@const plan = plans[group.id]}
     {@const state = rollup(plan, group.tasks)}
     <section class="plan">
-      <div class="titleblock">
+      <div class="titleblock" data-map="head" data-map-state={state}>
         <div class="tb-idea">
           <div class="eyebrow">Idea</div>
           <p class="idea">{plan?.idea || group.tasks[0]?.title || 'Breakdown'}</p>
@@ -145,6 +147,8 @@
           <button
             class="single {task.status}"
             class:selected={selectedId === task.id}
+            data-map="row"
+            data-map-state={task.status}
             onclick={() => dispatch('selectTask', { taskId: task.id })}
           >
             <span class="mark {task.status}"></span>
@@ -166,12 +170,19 @@
   {/if}
 </div>
 
+<PlanMinimap container={root} {signature} />
+
 <style>
   .plan-view {
     padding: 24px 28px 64px;
     display: flex;
     flex-direction: column;
     gap: 44px;
+  }
+
+  /* The minimap is fixed over the right edge, so the plan keeps clear of it. */
+  @media (min-width: 721px) {
+    .plan-view { padding-right: 94px; }
   }
 
   /* The title block borrows an engineering drawing's: what a person asked for

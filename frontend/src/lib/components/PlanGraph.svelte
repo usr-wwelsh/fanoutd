@@ -154,6 +154,8 @@
         <button
           class="node {task.status}"
           class:selected={selectedId === id}
+          data-map="node"
+          data-map-state={task.status}
           style="left:{at.x}px; top:{at.y}px"
           onclick={() => dispatch('selectTask', { taskId: id })}
         >
