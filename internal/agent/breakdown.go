@@ -77,19 +77,23 @@ second, because they carry both things that make a breakdown work:
 The contract is the third. The agents never speak to each other, so anything
 they must agree on has to be decided here, once, by you — otherwise each one
 invents its own version and the parts do not fit. Write it as a list of exact
-declarations, not as description:
+declarations, not as description.
 
-  src/world.js  exports setupWorld() -> { scene, camera, renderer }
-  src/player.js exports createPlayer(scene, camera) -> { mesh, update(dt) }
-                the camera is the one setupWorld returned; do not construct one
-  index.html    owns the single <canvas id="game-canvas">; modules render into
-                it and never append a canvas of their own
+Here is the shape of one, written for an unrelated idea. Copy the form and
+nothing else — the names below belong to that idea, not to yours:
 
-Name every function, its arguments, its return shape, and the element or global
-each side expects. Where two subtasks could each reasonably build the same thing
-— a renderer, a camera, a config object, a database handle — say which one owns
-it and that the other receives it. Cover every path that appears in a "reads"
-list, and nothing else.
+  src/alpha.js  exports openAlpha() -> { handleA, handleB }
+  src/beta.js   exports makeBeta(handleA) -> { value, step(n) }
+                handleA is the one openAlpha returned; do not construct one
+  entry.ext     owns the single top-level element the modules attach to; they
+                render into it and never create one of their own
+
+Every name, path, function, and element in your contract must come from the idea
+you were given. Name every function, its arguments, its return shape, and the
+element or global each side expects. Where two subtasks could each reasonably
+build the same thing — a renderer, a config object, a database handle — say which
+one owns it and that the other receives it. Cover every path that appears in a
+"reads" list, and nothing else.
 
 Rules:
 - Between 2 and 6 subtasks. Split where the files split. If the idea produces
@@ -565,12 +569,19 @@ Read every file you depend on before you write anything, and check it against th
 contract rather than against what you would have written. Where two parts disagree,
 change the one the contract says is wrong. Where both are wrong, change both.
 
-Then actually run it, by whatever means you have — build it, execute it, load it.
-A deliverable nobody has run is the thing you are here to prevent. If it cannot run
-at all, that is the bug, and it outranks everything else on your list.
+Then verify it as far as this machine allows — build it, execute it, import it, lint
+it. A deliverable nobody has checked is the thing you are here to prevent. If it
+breaks, that is the bug, and it outranks everything else on your list.
+
+Some deliverables cannot be executed here: a page needs a browser, a UI needs a
+screen. Do not spend steps chasing a runtime this sandbox does not have. Verify what
+you can by reading the parts against each other and against the contract, then say in
+your finish summary what you checked and what could not be run. Reporting that is a
+finished job; two failed attempts at the same runtime means it is not available.
 
 Add no features, no polish, and no files beyond the ones your goal names. Finishing
-with the pieces wired together and working is the whole of the goal.`
+with the pieces wired together and verified as far as they can be is the whole of the
+goal.`
 
 // GroupIdea recovers the idea a subtask was split from, for a caller that wants
 // to label the group rather than its parts. It returns "" for anything this
