@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { fetchFiles, fetchGroupPlan, rawFileUrl, stopGroup } from '../api.js';
+  import { fetchFiles, fetchGroupPlan, previewUrl, stopGroup } from '../api.js';
   import TaskCard from './TaskCard.svelte';
 
   // tasks is this column's members of the group, which is usually all of them.
@@ -182,7 +182,7 @@
         <div class="empty">No files yet.</div>
       {:else}
         {#each files as file (file.path)}
-          <button class="file" onclick={() => window.open(rawFileUrl(tasks[0].id, file.path), '_blank', 'noopener')}>
+          <button class="file" onclick={() => window.open(previewUrl(tasks[0].id, file.path), '_blank', 'noopener')}>
             <span class="file-path">{file.path}</span>
             <span class="file-size">{file.size} B</span>
           </button>

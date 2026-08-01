@@ -157,6 +157,14 @@ export function rawFileUrl(taskId, path) {
   return `${API_BASE}/tasks/${taskId}/raw?path=${encodeURIComponent(path)}`;
 }
 
+// previewUrl serves a file from a workspace hosted as a site, so a page finds
+// its own script and stylesheet by relative path. An empty path opens the
+// workspace root, which is index.html if there is one.
+export function previewUrl(taskId, path = '') {
+  const rel = path.split('/').map(encodeURIComponent).join('/');
+  return `/preview/${taskId}/${rel}`;
+}
+
 export function fileUrl(abs) {
   return `file://${abs.split('/').map(encodeURIComponent).join('/')}`;
 }

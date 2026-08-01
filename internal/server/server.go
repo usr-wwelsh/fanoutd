@@ -54,6 +54,7 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/tasks/", s.handleTaskRoute)
 	mux.HandleFunc("/api/breakdown", s.handleBreakdown)
 	mux.HandleFunc("/api/groups/", s.handleGroupRoute)
+	mux.HandleFunc(previewPrefix, s.handlePreview)
 	mux.Handle("/", http.FileServer(http.FS(s.ui)))
 
 	addr := fmt.Sprintf(":%d", port)

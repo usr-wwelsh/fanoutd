@@ -157,6 +157,12 @@ The files the agent produces are listed in the task detail panel and live on dis
 marked with whether this task wrote it; `fanout files` shows a subtask's own output and
 `--all` shows everything beside it.
 
+**Open** serves a file from its workspace at `/preview/<task-id>/`, so a deliverable that
+is a page loads with the scripts and styles beside it — the same thing `python -m
+http.server` in that directory does, without leaving the board to find the directory.
+The file name opens the raw bytes instead, which is how output that is not a site reads
+best. Serving is gated by `FANOUT_TOKEN` exactly as the API is.
+
 Repeating yourself ends a run, but only when nothing moved: a call that does not change
 the workspace is counted against the state it ran on, so reading a file back after
 editing it, or re-running the tests that caught a bug, is progress rather than a loop.
@@ -369,6 +375,7 @@ before exposing it beyond localhost.
 | POST | `/api/groups/:id/stop` | Cancel the schedule and every subtask under it |
 | GET | `/api/models` | Models this server accepts, and its default |
 | GET | `/api/health` | Health check |
+| GET | `/preview/:id/*` | A task's workspace served as a site — same gate as `/api` |
 
 ## Environment File
 

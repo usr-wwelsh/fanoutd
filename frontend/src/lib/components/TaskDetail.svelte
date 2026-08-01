@@ -5,7 +5,7 @@
   import { createEventDispatcher } from 'svelte';
   import {
     moveTask, startAgent, stopAgent, fetchFiles, updateTask,
-    retryTask, rawFileUrl, fileUrl,
+    retryTask, rawFileUrl, previewUrl, fileUrl,
   } from '../api.js';
 
   let { task, tasks = [] } = $props();
@@ -81,7 +81,13 @@
     });
   }
 
+  // Open serves the file from the workspace, so a page loads with the scripts
+  // and styles beside it. The file name opens the raw bytes instead.
   function open(file) {
+    window.open(previewUrl(task.id, file.path), '_blank', 'noopener');
+  }
+
+  function openRaw(file) {
     window.open(rawFileUrl(task.id, file.path), '_blank', 'noopener');
   }
 
@@ -179,12 +185,12 @@
       <ul>
         {#each files as file (file.path)}
           <li class:sibling={!file.owned}>
-            <button class="file-path" onclick={() => open(file)} title="Open in a new tab">{file.path}</button>
+            <button class="file-path" onclick={() => openRaw(file)} title="Open the raw file in a new tab">{file.path}</button>
             {#if !file.owned}
               <span class="file-owner" title="Written by another subtask sharing this workspace">sibling</span>
             {/if}
             <span class="file-size">{file.size} B</span>
-            <button class="btn tiny" onclick={() => open(file)}>Open</button>
+            <button class="btn tiny" onclick={() => open(file)} title="Open it served from its workspace, so a page finds its own scripts and styles">Open</button>
             <button class="copy-btn" onclick={() => copyPath(file)} title={fileUrl(file.abs)}>
               {copied === file.path ? 'Copied' : 'file://'}
             </button>

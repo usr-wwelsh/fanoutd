@@ -24,11 +24,19 @@ var publicPaths = map[string]bool{
 
 func (s *Server) authEnabled() bool { return s.cfg.Token != "" }
 
-// withAuth gates /api. Static files stay open so the login page can load before
-// a token exists; every endpoint behind it is protected.
+// gated marks the paths a token is required for. Workspace output is served as
+// a site under /preview/, so it needs the same gate the API has - a page is no
+// less of the board's contents for being HTML.
+func gated(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, previewPrefix)
+}
+
+// withAuth gates /api and the served workspaces. The UI's own static files stay
+// open so the login page can load before a token exists; everything that reads
+// the board or its output is protected.
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.authEnabled() || !strings.HasPrefix(r.URL.Path, "/api/") || publicPaths[r.URL.Path] {
+		if !s.authEnabled() || !gated(r.URL.Path) || publicPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
