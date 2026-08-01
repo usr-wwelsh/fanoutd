@@ -121,7 +121,29 @@ func scheduledLoop(t *testing.T, f *fakeModel) (*Loop, *store.Store) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	client := openrouter.NewClient("test-key", "test-model", srv.URL)
-	return NewLoop(s, client, filepath.Join(dir, "output")), s
+	l := NewLoop(s, client, filepath.Join(dir, "output"))
+	stopEverything(t, l)
+	return l, s
+}
+
+// stopEverything makes a test wait for its runs before its directories go away.
+// A test that leaves a schedule running — which several deliberately do — hands
+// the temp directory to RemoveAll while a goroutine is still parked on the model
+// call. Cancelling wakes it, and it writes its final status into a directory
+// halfway through being deleted, which fails the cleanup rather than the test
+// and points at whichever test happened to be running.
+//
+// It has to be registered after t.TempDir, since cleanups run last-registered
+// first and this one must go before the removal.
+func stopEverything(t *testing.T, l *Loop) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if !l.Shutdown(ctx) {
+			t.Error("runs were still going when the test ended")
+		}
+	})
 }
 
 func TestRunGroupRespectsDependencyOrder(t *testing.T) {

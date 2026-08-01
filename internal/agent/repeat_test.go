@@ -72,7 +72,9 @@ func scriptedLoop(t *testing.T, replies ...string) (*Loop, *store.Store) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	client := openrouter.NewClient("test-key", "test-model", srv.URL)
-	return NewLoop(s, client, filepath.Join(dir, "output")), s
+	l := NewLoop(s, client, filepath.Join(dir, "output"))
+	stopEverything(t, l)
+	return l, s
 }
 
 // runToEnd starts a task and waits for the loop to record a final status.
