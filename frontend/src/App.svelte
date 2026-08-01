@@ -6,6 +6,7 @@
   import BreakdownModal from './lib/components/BreakdownModal.svelte';
   import Login from './lib/components/Login.svelte';
   import { onMount } from 'svelte';
+  import { active, toggleTheme } from './lib/theme.svelte.js';
   import { AuthError, fetchAuthStatus, fetchTasks, logout, moveTask, deleteTask, moveGroup, deleteGroup } from './lib/api.js';
 
   let tasks = $state([]);
@@ -29,6 +30,7 @@
   }
 
   let running = $derived(tasks.filter(t => t.status === 'running').length);
+  let dark = $derived(active() === 'dark');
 
   onMount(() => {
     init();
@@ -190,6 +192,12 @@
     </div>
 
     <div class="header-actions">
+      <button
+        class="btn quiet theme"
+        onclick={toggleTheme}
+        title="Switch to {dark ? 'light' : 'dark'} for this tab — reopening follows your system"
+        aria-label="Switch to {dark ? 'light' : 'dark'} theme"
+      >{dark ? '☀' : '☾'}</button>
       <button class="btn quiet" onclick={handleRefresh} disabled={loading}>Refresh</button>
       <button class="btn" onclick={() => showNewTask = true}>New task</button>
       <button class="btn primary" onclick={() => showBreakdown = true}>Break down an idea</button>
@@ -302,6 +310,8 @@
 
   .header-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 
+  .theme { font-size: 14px; line-height: 1; padding: 6px 9px; }
+
   .banner { margin: 14px 28px 0; }
 
   .loading {
@@ -322,7 +332,7 @@
     border-left: 1px solid var(--ink);
     overflow-y: auto;
     padding: 22px 24px 40px;
-    box-shadow: -20px 0 40px -30px rgba(31,35,32,.6);
+    box-shadow: var(--shadow-side);
     z-index: 20;
   }
   .close-btn {

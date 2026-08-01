@@ -6,26 +6,49 @@
  * running, so it appears nowhere else. */
 
 :root {
-  --paper:      #E9E7DF;
-  --panel:      #F5F3ED;
-  --sunk:       #E2DFD5;
-  --rule:       #B8B4A5;
-  --rule-soft:  #D3CFC2;
-  --ink:        #1F2320;
-  --ink-2:      #5C605A;
-  --ink-3:      #8A8D85;
-  --live:       #2A45D8;
-  --live-wash:  #E4E6F8;
-  --fault:      #9B3A2E;
-  --fault-wash: #F3E3E0;
-
   --f-display: 'Newsreader', Georgia, 'Times New Roman', serif;
   --f-ui: 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --f-mono: 'Fragment Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
 
   --r: 2px;
-  --shadow: 0 1px 0 rgba(31,35,32,.06), 0 8px 24px -16px rgba(31,35,32,.35);
 }
+
+/* Every colour is one token carrying both themes, so a component never asks
+ * which one is on and the set can't drift out of step with itself. Which half
+ * of each pair resolves is decided by color-scheme alone: `light dark` below
+ * means the OS picks, and it picks during the first paint — there is nothing
+ * stored to read back and nothing to repaint, so an open in dark never flashes
+ * light. An explicit choice is one attribute on the root, set from JS and gone
+ * with the tab, which is why every open starts from the system again. */
+
+:root {
+  color-scheme: light dark;
+
+  --paper:      light-dark(#E9E7DF, #151714);
+  --panel:      light-dark(#F5F3ED, #1E211D);
+  --sunk:       light-dark(#E2DFD5, #101210);
+  --rule:       light-dark(#B8B4A5, #3D413A);
+  --rule-soft:  light-dark(#D3CFC2, #2B2E29);
+  --ink:        light-dark(#1F2320, #E8E6DC);
+  --ink-2:      light-dark(#5C605A, #A6A9A0);
+  --ink-3:      light-dark(#8A8D85, #757970);
+  --ink-hi:     light-dark(#000000, #FFFFFF);
+  --live:       light-dark(#2A45D8, #6F86FF);
+  --live-hi:    light-dark(#1E36B8, #8B9CFF);
+  --live-wash:  light-dark(#E4E6F8, #1D2242);
+  --on-live:    light-dark(#FFFFFF, #10131F);
+  --fault:      light-dark(#9B3A2E, #E28A7C);
+  --fault-wash: light-dark(#F3E3E0, #37211D);
+
+  --scrim: light-dark(rgba(31,35,32,.42), rgba(0,0,0,.62));
+  --shadow:
+    0 1px 0 light-dark(rgba(31,35,32,.06), rgba(0,0,0,.4)),
+    0 8px 24px -16px light-dark(rgba(31,35,32,.35), rgba(0,0,0,.8));
+  --shadow-side: -20px 0 40px -30px light-dark(rgba(31,35,32,.6), rgba(0,0,0,.85));
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
 
 /* Self-hosting the three faces is a drop-in: put the woff2 files in
  * frontend/public/fonts/ and uncomment. Until then the stacks above fall back
@@ -50,7 +73,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-::selection { background: var(--live); color: var(--panel); }
+::selection { background: var(--live); color: var(--on-live); }
 
 :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--live);
@@ -132,10 +155,10 @@ body {
 .btn:disabled { opacity: .45; cursor: default; }
 
 .btn.primary { background: var(--ink); border-color: var(--ink); color: var(--panel); }
-.btn.primary:hover:not(:disabled) { background: #000; }
+.btn.primary:hover:not(:disabled) { background: var(--ink-hi); }
 
-.btn.live { background: var(--live); border-color: var(--live); color: #fff; }
-.btn.live:hover:not(:disabled) { background: #1E36B8; }
+.btn.live { background: var(--live); border-color: var(--live); color: var(--on-live); }
+.btn.live:hover:not(:disabled) { background: var(--live-hi); border-color: var(--live-hi); }
 
 .btn.danger { color: var(--fault); border-color: var(--rule); background: none; }
 .btn.danger:hover:not(:disabled) { border-color: var(--fault); background: var(--fault-wash); }
@@ -200,7 +223,7 @@ input:disabled, textarea:disabled, select:disabled { opacity: .5; }
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(31,35,32,.42);
+  background: var(--scrim);
   display: flex;
   justify-content: center;
   align-items: center;

@@ -264,7 +264,7 @@
     transform: translateX(-50%);
     padding: 2px 7px;
     background: var(--live);
-    color: #fff;
+    color: var(--on-live);
     font-family: var(--f-mono);
     font-size: 10px;
     white-space: nowrap;
