@@ -322,22 +322,32 @@ func TestCommandIsRecordedInTheTrace(t *testing.T) {
 }
 
 func TestLoggedActionKeepsTheCommand(t *testing.T) {
-	tc := &ToolCall{Name: execTool, Command: "go test ./..."}
+	tc := ToolCall{Name: execTool, Command: "go test ./..."}
+	calls := []pendingCall{{Call: tc}}
 
 	// The model usually writes its own action text, which is exactly when
 	// describeCall does not run and the command would otherwise be lost.
-	got := loggedAction("Let me run the tests again", tc)
+	got := loggedAction("Let me run the tests again", calls)
 	if !strings.Contains(got, "Let me run the tests again") || !strings.Contains(got, "go test ./...") {
 		t.Fatalf("model prose and command not both recorded: %q", got)
 	}
 
 	// A synthesized label already names it; saying it twice helps nobody.
-	if got := loggedAction(describeCall(*tc), tc); strings.Count(got, "go test") != 1 {
+	if got := loggedAction(describeCalls(calls), calls); strings.Count(got, "go test") != 1 {
 		t.Fatalf("command duplicated in the action: %q", got)
 	}
 
 	if got := loggedAction("just thinking", nil); got != "just thinking" {
 		t.Fatalf("non-command action rewritten: %q", got)
+	}
+
+	// Every command in a batch has to reach the trace, not just the first.
+	batch := []pendingCall{
+		{Call: ToolCall{Name: execTool, Command: "go build ./..."}},
+		{Call: tc},
+	}
+	if got := loggedAction("checking the work", batch); !strings.Contains(got, "go build") || !strings.Contains(got, "go test") {
+		t.Fatalf("a command from the batch was dropped: %q", got)
 	}
 }
 

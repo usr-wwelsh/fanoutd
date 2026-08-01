@@ -135,8 +135,8 @@ func TestParseResponseNativeToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseResponse: %v", err)
 	}
-	if got.Tool == nil || got.Tool.Name != "write_file" || got.Tool.Path != "tetris.html" {
-		t.Fatalf("tool = %+v", got.Tool)
+	if len(got.Tools) != 1 || got.Tools[0].Call.Name != "write_file" || got.Tools[0].Call.Path != "tetris.html" {
+		t.Fatalf("tools = %+v", got.Tools)
 	}
 	if got.Action != "Writing the board renderer." || got.Synthesized {
 		t.Errorf("action = %q synthesized=%v, want the model's own text", got.Action, got.Synthesized)
@@ -154,8 +154,8 @@ func TestParseResponseSynthesizesActionWhenSilent(t *testing.T) {
 		t.Fatalf("parseResponse: %v", err)
 	}
 	// Name is lowercased so the repeat counter and Exec see one spelling.
-	if got.Tool.Name != "read_file" {
-		t.Errorf("name = %q, want read_file", got.Tool.Name)
+	if len(got.Tools) != 1 || got.Tools[0].Call.Name != "read_file" {
+		t.Errorf("tools = %+v, want one read_file", got.Tools)
 	}
 	if !got.Synthesized {
 		t.Error("want Synthesized, since the model wrote no action text")
@@ -181,8 +181,56 @@ func TestParseResponseFinishTool(t *testing.T) {
 	if !got.GoalMet || got.Summary != "wrote tetris.html" {
 		t.Errorf("got %+v, want goal met with a summary", got)
 	}
-	if got.Tool != nil {
+	if len(got.Tools) != 0 {
 		t.Error("finish is not a workspace operation and must not be executed")
+	}
+}
+
+// A model that writes its last file and signs off in the same turn must get
+// both: returning on the finish alone discards the write it was signing off on.
+func TestParseResponseFinishAlongsideWork(t *testing.T) {
+	resp := &openrouter.Result{
+		ToolCalls: []openrouter.ToolCall{
+			{ID: "c1", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"hi"}`}},
+			{ID: "c2", Function: openrouter.FunctionCall{Name: "finish", Arguments: `{"summary":"wrote a.md"}`}},
+		},
+	}
+	got, err := parseResponse(resp)
+	if err != nil {
+		t.Fatalf("parseResponse: %v", err)
+	}
+	if !got.GoalMet || got.Summary != "wrote a.md" {
+		t.Errorf("got goal_met=%v summary=%q, want the finish to be honoured", got.GoalMet, got.Summary)
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Call.Path != "a.md" {
+		t.Fatalf("tools = %+v, want the write still pending", got.Tools)
+	}
+}
+
+// Every call in a turn has to survive parsing, with the ids their results will
+// be keyed on.
+func TestParseResponseKeepsEveryToolCall(t *testing.T) {
+	resp := &openrouter.Result{
+		ToolCalls: []openrouter.ToolCall{
+			{ID: "c1", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"a"}`}},
+			{ID: "c2", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"b.md","content":"b"}`}},
+			{ID: "c3", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"c.md","content":"c"}`}},
+		},
+	}
+	got, err := parseResponse(resp)
+	if err != nil {
+		t.Fatalf("parseResponse: %v", err)
+	}
+	if len(got.Tools) != 3 {
+		t.Fatalf("kept %d of 3 calls", len(got.Tools))
+	}
+	for i, want := range []string{"c1", "c2", "c3"} {
+		if got.Tools[i].ID != want {
+			t.Errorf("call %d has id %q, want %q — in the order the model made them", i, got.Tools[i].ID, want)
+		}
+		if got.Tools[i].Args == "" {
+			t.Errorf("call %d kept no arguments to replay", i)
+		}
 	}
 }
 
@@ -194,8 +242,12 @@ func TestParseResponseJSONFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseResponse: %v", err)
 	}
-	if got.Action != "write the page" || got.Tool == nil || got.Tool.Path != "index.html" {
+	if got.Action != "write the page" || len(got.Tools) != 1 || got.Tools[0].Call.Path != "index.html" {
 		t.Fatalf("got %+v", got)
+	}
+	// The fallback protocol carries no id, so this step replays as prose.
+	if got.Tools[0].ID != "" {
+		t.Errorf("id = %q, want empty", got.Tools[0].ID)
 	}
 	if got.Synthesized {
 		t.Error("the model described the action itself")
@@ -234,7 +286,7 @@ func TestParseResponseToolCallWithoutArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseResponse: %v", err)
 	}
-	if got.Tool == nil || got.Tool.Name != "list_files" {
-		t.Fatalf("tool = %+v", got.Tool)
+	if len(got.Tools) != 1 || got.Tools[0].Call.Name != "list_files" {
+		t.Fatalf("tools = %+v", got.Tools)
 	}
 }

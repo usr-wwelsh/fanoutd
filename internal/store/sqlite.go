@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -74,6 +75,7 @@ func initSchema(db *sql.DB) error {
 		response TEXT NOT NULL,
 		tool_name TEXT NOT NULL DEFAULT '',
 		tool_result TEXT NOT NULL DEFAULT '',
+		calls TEXT NOT NULL DEFAULT '',
 		timestamp DATETIME NOT NULL,
 		FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 	);`
@@ -112,6 +114,7 @@ func initSchema(db *sql.DB) error {
 		{"tasks", "group_id", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_name", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_result", "TEXT NOT NULL DEFAULT ''"},
+		{"trace_steps", "calls", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, m := range migrations {
 		if err := addColumnIfMissing(db, m.table, m.column, m.def); err != nil {
@@ -288,7 +291,7 @@ func (s *Store) DeleteTask(id string) error {
 
 func (s *Store) ListTraceSteps(taskID string) ([]models.TraceStep, error) {
 	rows, err := s.db.Query(
-		"SELECT id, task_id, step_number, action, prompt, response, tool_name, tool_result, timestamp FROM trace_steps WHERE task_id = ? ORDER BY id ASC",
+		"SELECT id, task_id, step_number, action, prompt, response, tool_name, tool_result, calls, timestamp FROM trace_steps WHERE task_id = ? ORDER BY id ASC",
 		taskID,
 	)
 	if err != nil {
@@ -298,22 +301,59 @@ func (s *Store) ListTraceSteps(taskID string) ([]models.TraceStep, error) {
 	steps := []models.TraceStep{}
 	for rows.Next() {
 		ts := models.TraceStep{}
-		err := rows.Scan(&ts.ID, &ts.TaskID, &ts.StepNumber, &ts.Action, &ts.Prompt, &ts.Response, &ts.ToolName, &ts.ToolResult, &ts.Timestamp)
+		var calls string
+		err := rows.Scan(&ts.ID, &ts.TaskID, &ts.StepNumber, &ts.Action, &ts.Prompt, &ts.Response, &ts.ToolName, &ts.ToolResult, &calls, &ts.Timestamp)
 		if err != nil {
 			return nil, err
+		}
+		// A row whose calls will not decode is one written by an older build or
+		// hand-edited; it still has its prose, which is what the replay falls
+		// back to, so it is not worth failing the whole trace over.
+		if calls != "" {
+			json.Unmarshal([]byte(calls), &ts.Calls)
 		}
 		steps = append(steps, ts)
 	}
 	return steps, rows.Err()
 }
 
-func (s *Store) AddTraceStep(taskID string, stepNumber int, action, prompt, response, toolName, toolResult string) error {
+// TraceEntry is one row to append. A step can make several tool calls at once,
+// which is more than an argument list wants to say.
+type TraceEntry struct {
+	TaskID     string
+	Step       int
+	Action     string
+	Prompt     string
+	Response   string
+	ToolName   string
+	ToolResult string
+	Calls      []models.ToolExchange
+}
+
+func (s *Store) AddTrace(e TraceEntry) error {
+	calls := ""
+	if len(e.Calls) > 0 {
+		encoded, err := json.Marshal(e.Calls)
+		if err != nil {
+			return err
+		}
+		calls = string(encoded)
+	}
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		"INSERT INTO trace_steps (task_id, step_number, action, prompt, response, tool_name, tool_result, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		taskID, stepNumber, action, prompt, response, toolName, toolResult, now,
+		"INSERT INTO trace_steps (task_id, step_number, action, prompt, response, tool_name, tool_result, calls, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		e.TaskID, e.Step, e.Action, e.Prompt, e.Response, e.ToolName, e.ToolResult, calls, now,
 	)
 	return err
+}
+
+// AddTraceStep records a step that made no replayable tool call: the JSON
+// fallback protocol, and the bookkeeping a run writes around itself.
+func (s *Store) AddTraceStep(taskID string, stepNumber int, action, prompt, response, toolName, toolResult string) error {
+	return s.AddTrace(TraceEntry{
+		TaskID: taskID, Step: stepNumber, Action: action, Prompt: prompt,
+		Response: response, ToolName: toolName, ToolResult: toolResult,
+	})
 }
 
 func (s *Store) ClearTrace(taskID string) error {

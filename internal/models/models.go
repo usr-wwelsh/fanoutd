@@ -94,14 +94,36 @@ type FileEntry struct {
 	Owned bool `json:"owned"`
 }
 
+// ToolExchange is one native tool call together with what running it returned.
+//
+// It is recorded because the next request has to replay the call the way the
+// provider expects — an assistant turn carrying tool_calls, then a "tool" message
+// keyed on the same id. Replaying only the prose around a call, which is all
+// Response holds, hands the model a transcript in which it can see that it wrote
+// a file but not what it wrote.
+type ToolExchange struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Arguments is the JSON object string the model sent, kept verbatim so the
+	// replayed call is the one it actually made.
+	Arguments string `json:"arguments"`
+	Result    string `json:"result"`
+}
+
 type TraceStep struct {
-	ID         int       `json:"id"`
-	TaskID     string    `json:"task_id"`
-	StepNumber int       `json:"step_number"`
-	Action     string    `json:"action"`
-	Prompt     string    `json:"prompt"`
-	Response   string    `json:"response"`
-	ToolName   string    `json:"tool_name"`
-	ToolResult string    `json:"tool_result"`
-	Timestamp  time.Time `json:"timestamp"`
+	ID         int    `json:"id"`
+	TaskID     string `json:"task_id"`
+	StepNumber int    `json:"step_number"`
+	Action     string `json:"action"`
+	Prompt     string `json:"prompt"`
+	Response   string `json:"response"`
+	ToolName   string `json:"tool_name"`
+	ToolResult string `json:"tool_result"`
+	// Calls holds every tool call this step made, in order. It is empty for a
+	// step that used the JSON fallback protocol, for the bookkeeping steps a run
+	// records around itself, and for rows written before calls were kept at all —
+	// ToolName and ToolResult still summarise it, so anything that only displays
+	// a step needs no knowledge of this field.
+	Calls     []ToolExchange `json:"calls,omitempty"`
+	Timestamp time.Time      `json:"timestamp"`
 }

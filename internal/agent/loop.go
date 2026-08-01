@@ -28,6 +28,11 @@ const actionParseFailure = "unparseable model response"
 // a full page and its continuation notice reach the model unclipped.
 const toolResultBudget = 8000
 
+// toolCallBudget caps the arguments of a replayed call. Unlike a result, these
+// are bytes the model wrote and can write again, so the cap is there to keep one
+// large file from crowding out the rest of the transcript.
+const toolCallBudget = 8000
+
 var ErrAlreadyRunning = errors.New("agent loop already running for this task")
 
 var ErrGroupRunning = errors.New("this breakdown is already running")
@@ -471,20 +476,14 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		}
 		parseFailures = 0
 
-		if result.GoalMet {
-			summary := strings.TrimSpace(result.Summary)
-			if summary == "" {
-				summary = fmt.Sprintf("Task completed in %d steps.", step)
-			}
+		if result.GoalMet && len(result.Tools) == 0 {
 			l.store.AddTraceStep(taskID, step, "goal met", "", result.Text, "", "")
-			if err := l.store.SetTaskFinished(taskID, summary); err != nil {
-				l.fail(taskID, step, err.Error())
-			}
+			l.finish(taskID, step, result.Summary)
 			return
 		}
 
 		action := result.Action
-		logged := loggedAction(action, result.Tool)
+		logged := loggedAction(action, result.Tools)
 
 		// What makes a repeat a loop is that nothing moved between the two
 		// attempts, so every key that is not itself a change to the workspace is
@@ -494,43 +493,62 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		// agent is converging.
 		fingerprint := ws.Fingerprint()
 
-		if result.Tool != nil {
-			key := "tool\x00" + result.Tool.signature()
-			if !mutatingTool(result.Tool.Name) {
+		// A turn that signs off is the last one either way, so there is nothing
+		// left for the guard to save it from.
+		if !result.GoalMet {
+			for _, pc := range result.Tools {
+				key := "tool\x00" + pc.Call.signature()
+				if !mutatingTool(pc.Call.Name) {
+					key += "\x00" + fingerprint
+				}
+				seen[key]++
+				if seen[key] >= repeatLimit {
+					l.store.AddTraceStep(taskID, step, logged, "", result.Text, pc.Call.Name, "aborted: identical tool call repeated")
+					l.concede(taskID, step, fmt.Sprintf("agent repeated the same %s call %d times without making progress", pc.Call.Name, seen[key]))
+					return
+				}
+			}
+
+			// Only count actions the model actually wrote. A synthesized label
+			// describes the calls, which the tool signatures above already cover.
+			if key := normalize(action); key != "" && !result.Synthesized {
 				key += "\x00" + fingerprint
-			}
-			seen[key]++
-			if seen[key] >= repeatLimit {
-				l.store.AddTraceStep(taskID, step, logged, "", result.Text, result.Tool.Name, "aborted: identical tool call repeated")
-				l.concede(taskID, step, fmt.Sprintf("agent repeated the same %s call %d times without making progress", result.Tool.Name, seen[key]))
-				return
-			}
-		}
-
-		// Only count actions the model actually wrote. A synthesized label
-		// describes the call, which the tool signature above already covers.
-		if key := normalize(action); key != "" && !result.Synthesized {
-			key += "\x00" + fingerprint
-			seen[key]++
-			if seen[key] >= repeatLimit {
-				l.store.AddTraceStep(taskID, step, logged, "", result.Text, "", "aborted: identical action repeated")
-				l.concede(taskID, step, fmt.Sprintf("agent repeated the same action %d times without making progress: %q", seen[key], action))
-				return
+				seen[key]++
+				if seen[key] >= repeatLimit {
+					l.store.AddTraceStep(taskID, step, logged, "", result.Text, "", "aborted: identical action repeated")
+					l.concede(taskID, step, fmt.Sprintf("agent repeated the same action %d times without making progress: %q", seen[key], action))
+					return
+				}
 			}
 		}
 
-		toolName, toolResult := "", ""
-		if result.Tool != nil {
-			toolName = result.Tool.Name
-			out, err := ws.ExecContext(ctx, *result.Tool)
+		// Calls run in the order the model made them, and one failing does not
+		// cancel the rest: every call has to come back with a result of its own,
+		// or the model is left holding an id nothing answered.
+		exchanges := make([]models.ToolExchange, 0, len(result.Tools))
+		for _, pc := range result.Tools {
+			out, err := ws.ExecContext(ctx, pc.Call)
 			if err != nil {
-				toolResult = "error: " + err.Error()
-			} else {
-				toolResult = out
+				out = "error: " + err.Error()
 			}
+			exchanges = append(exchanges, models.ToolExchange{
+				ID:        pc.ID,
+				Name:      pc.Call.Name,
+				Arguments: replayArgs(pc.Args),
+				Result:    out,
+			})
 		}
 
-		l.store.AddTraceStep(taskID, step, logged, "", result.Text, toolName, toolResult)
+		toolName, toolResult := summarizeExchanges(exchanges)
+		l.store.AddTrace(store.TraceEntry{
+			TaskID: taskID, Step: step, Action: logged, Response: result.Text,
+			ToolName: toolName, ToolResult: toolResult, Calls: exchanges,
+		})
+
+		if result.GoalMet {
+			l.finish(taskID, step, result.Summary)
+			return
+		}
 
 		select {
 		case <-ctx.Done():
@@ -541,6 +559,53 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 	}
 
 	l.concede(taskID, step, fmt.Sprintf("reached the %d step limit without meeting the goal", l.maxSteps))
+}
+
+// finish files a run the model signed off on.
+func (l *Loop) finish(taskID string, step int, summary string) {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = fmt.Sprintf("Task completed in %d steps.", step)
+	}
+	if err := l.store.SetTaskFinished(taskID, summary); err != nil {
+		l.fail(taskID, step, err.Error())
+	}
+}
+
+// summarizeExchanges renders a batch of calls into the single name and result
+// the trace displays. Everything that only shows a step — the board, the CLI —
+// reads those two fields, so a turn that made three calls has to say so there
+// rather than only in Calls.
+func summarizeExchanges(ex []models.ToolExchange) (string, string) {
+	switch len(ex) {
+	case 0:
+		return "", ""
+	case 1:
+		return ex[0].Name, ex[0].Result
+	}
+	parts := make([]string, 0, len(ex))
+	for _, e := range ex {
+		parts = append(parts, e.Name+": "+e.Result)
+	}
+	return fmt.Sprintf("%s +%d", ex[0].Name, len(ex)-1), strings.Join(parts, "\n\n")
+}
+
+// replayArgs caps the arguments carried back into the next request. A whole
+// file's content sits in a write_file call, and replaying every one of them
+// verbatim fills the window with bytes the model can read back off disk when it
+// actually needs them. The clipped form is still a valid JSON object, since a
+// provider may parse what it is handed rather than pass it through.
+func replayArgs(args string) string {
+	if len(args) <= toolCallBudget {
+		return args
+	}
+	clipped, err := json.Marshal(map[string]string{
+		"note": fmt.Sprintf("arguments too large to keep in the transcript (%d bytes); read the file back if you need them", len(args)),
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(clipped)
 }
 
 func (l *Loop) fail(taskID string, step int, msg string) {
@@ -625,6 +690,25 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 	}
 
 	for _, ts := range trace {
+		// A step that made real tool calls replays as the exchange it was: the
+		// assistant turn carrying those calls, then one "tool" message per call.
+		// This is the shape models are trained on, and it is the only shape in
+		// which the model can see the arguments it sent — without it, an agent
+		// that wrote a file has no record of what it put in it and re-reads the
+		// file to find out, which is the loop the repeat guard then aborts.
+		if replayable(ts) {
+			msgs = append(msgs, assistantTurn(ts))
+			for _, c := range ts.Calls {
+				msgs = append(msgs, openrouter.MsgBlock{
+					Role:       "tool",
+					ToolCallID: c.ID,
+					Name:       c.Name,
+					Content:    truncate(c.Result, toolResultBudget),
+				})
+			}
+			continue
+		}
+
 		if ts.Response != "" {
 			content := ts.Response
 			// Replaying a malformed reply in full invites the model to repeat it.
@@ -645,13 +729,62 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 	return msgs
 }
 
-// stepResult is one decoded model turn, from either a native tool call or the
-// JSON fallback body.
+// replayable reports whether a step can go back as a native exchange. Every call
+// needs the id its result will be keyed on: a "tool" message naming a call the
+// assistant turn never made is rejected outright by some providers and silently
+// unmatched by the rest, so a step missing any id replays as prose instead —
+// which is also what every row written before calls were recorded does.
+func replayable(ts models.TraceStep) bool {
+	if len(ts.Calls) == 0 {
+		return false
+	}
+	for _, c := range ts.Calls {
+		if c.ID == "" || c.Name == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// assistantTurn rebuilds the turn that made a step's calls. Content is whatever
+// the model wrote alongside them, which is often nothing.
+func assistantTurn(ts models.TraceStep) openrouter.MsgBlock {
+	calls := make([]openrouter.ToolCall, 0, len(ts.Calls))
+	for _, c := range ts.Calls {
+		args := c.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		calls = append(calls, openrouter.ToolCall{
+			ID:       c.ID,
+			Type:     "function",
+			Function: openrouter.FunctionCall{Name: c.Name, Arguments: args},
+		})
+	}
+	return openrouter.MsgBlock{Role: "assistant", Content: ts.Response, ToolCalls: calls}
+}
+
+// pendingCall is one tool call the model asked for, with the identity the
+// provider gave it. The id is what lets the result go back as a "tool" message
+// the model can match to its own call; the JSON fallback protocol has no ids, so
+// a call parsed from it replays as prose instead.
+type pendingCall struct {
+	ID   string
+	Args string
+	Call ToolCall
+}
+
+// stepResult is one decoded model turn, from native tool calls or the JSON
+// fallback body.
 type stepResult struct {
 	GoalMet bool
 	Summary string
 	Action  string
-	Tool    *ToolCall
+	// Tools holds every call the turn made, in the order the model made them.
+	// Models routinely emit several at once — three files written in one turn —
+	// and running only the first leaves the model believing in two writes that
+	// never happened.
+	Tools []pendingCall
 	// Text is replayed as the assistant turn in later requests. It holds only
 	// what the model actually wrote — replaying a synthesized description of a
 	// tool call teaches the model to emit that description instead of calling.
@@ -660,37 +793,56 @@ type stepResult struct {
 	Synthesized bool
 }
 
-// parseResponse prefers a native tool call and falls back to the JSON protocol
+// parseResponse prefers native tool calls and falls back to the JSON protocol
 // for models that ignore the tools parameter.
 func parseResponse(resp *openrouter.Result) (*stepResult, error) {
 	content := strings.TrimSpace(resp.Content)
 
 	if len(resp.ToolCalls) > 0 {
-		call := resp.ToolCalls[0]
-		name := strings.ToLower(strings.TrimSpace(call.Function.Name))
-		if name == "" {
-			return nil, fmt.Errorf("tool call had no function name")
-		}
+		var calls []pendingCall
+		goalMet, summary := false, ""
 
-		var tc ToolCall
-		if args := strings.TrimSpace(call.Function.Arguments); args != "" {
-			if err := json.Unmarshal([]byte(args), &tc); err != nil {
-				return nil, fmt.Errorf("tool call arguments for %s were not valid JSON: %v", name, err)
+		for _, call := range resp.ToolCalls {
+			name := strings.ToLower(strings.TrimSpace(call.Function.Name))
+			if name == "" {
+				return nil, fmt.Errorf("tool call had no function name")
 			}
-		}
-		tc.Name = name
 
-		if name == finishTool {
-			return &stepResult{GoalMet: true, Summary: tc.Summary, Text: content}, nil
+			var tc ToolCall
+			args := strings.TrimSpace(call.Function.Arguments)
+			if args != "" {
+				if err := json.Unmarshal([]byte(args), &tc); err != nil {
+					return nil, fmt.Errorf("tool call arguments for %s were not valid JSON: %v", name, err)
+				}
+			}
+			tc.Name = name
+
+			// finish arrives alongside the work it signs off on often enough that
+			// treating it as the whole turn discards that work. It is remembered
+			// and applied once the calls beside it have run.
+			if name == finishTool {
+				goalMet = true
+				if summary == "" {
+					summary = tc.Summary
+				}
+				continue
+			}
+			calls = append(calls, pendingCall{ID: call.ID, Args: args, Call: tc})
+		}
+
+		if goalMet && len(calls) == 0 {
+			return &stepResult{GoalMet: true, Summary: summary, Text: content}, nil
 		}
 
 		action, synthesized := content, false
 		if action == "" {
-			action, synthesized = describeCall(tc), true
+			action, synthesized = describeCalls(calls), true
 		}
 		return &stepResult{
+			GoalMet:     goalMet,
+			Summary:     summary,
 			Action:      action,
-			Tool:        &tc,
+			Tools:       calls,
 			Text:        content,
 			Synthesized: synthesized,
 		}, nil
@@ -715,11 +867,15 @@ func parseResponse(resp *openrouter.Result) (*stepResult, error) {
 	if action == "" {
 		action, synthesized = "(no action described)", true
 	}
+	var tools []pendingCall
+	if parsed.Tool != nil {
+		tools = []pendingCall{{Call: *parsed.Tool}}
+	}
 	return &stepResult{
 		GoalMet:     parsed.GoalMet,
 		Summary:     parsed.Summary,
 		Action:      action,
-		Tool:        parsed.Tool,
+		Tools:       tools,
 		Text:        content,
 		Synthesized: synthesized,
 	}, nil
@@ -739,28 +895,39 @@ File contents go inside the "content" string, JSON-escaped — newlines as \n an
 quotes as \". Send the corrected reply now.`, err)
 }
 
-// loggedAction is what the trace records. describeCall only names the command
-// when the model wrote no action text of its own, and most of the time it does
-// — so without this the command is recorded nowhere, since native tool call
-// arguments are never replayed. That leaves the operator reading an
-// unexplained failure and the model reading output it cannot attribute.
-func loggedAction(action string, tc *ToolCall) string {
-	if tc == nil || tc.Command == "" {
-		return action
+// loggedAction is what the trace records: the model's own words, with any
+// command it ran named alongside them. describeCalls only names the command when
+// the model wrote nothing itself, and most of the time it writes something — so
+// without this the operator reads a failed step that never says what was run.
+func loggedAction(action string, calls []pendingCall) string {
+	for _, pc := range calls {
+		if pc.Call.Command == "" {
+			continue
+		}
+		ran := "[ran: " + truncate(pc.Call.Command, 200) + "]"
+		if strings.Contains(action, ran) {
+			continue
+		}
+		action = strings.TrimSpace(action + " " + ran)
 	}
-	ran := "[ran: " + truncate(tc.Command, 200) + "]"
-	if strings.Contains(action, ran) {
-		return action
+	return action
+}
+
+// describeCalls labels a turn that made calls without saying anything about
+// them.
+func describeCalls(calls []pendingCall) string {
+	if len(calls) == 0 {
+		return "(no action described)"
 	}
-	return strings.TrimSpace(action + " " + ran)
+	parts := make([]string, 0, len(calls))
+	for _, pc := range calls {
+		parts = append(parts, describeCall(pc.Call))
+	}
+	return strings.Join(parts, " ")
 }
 
 func describeCall(tc ToolCall) string {
 	if tc.Command != "" {
-		// The command has to appear here or it is recorded nowhere: native tool
-		// call arguments are not replayed, so without this the model reads back
-		// its own output with no idea what produced it, and the trace shows an
-		// unexplained failure.
 		return fmt.Sprintf("[ran: %s]", truncate(tc.Command, 200))
 	}
 	if tc.Path != "" {

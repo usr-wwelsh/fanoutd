@@ -35,6 +35,11 @@ type MsgBlock struct {
 	Role      string     `json:"role"`
 	Content   string     `json:"content"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID and Name belong to a role:"tool" message, and name the call it
+	// answers. A tool result delivered without them is just another user turn,
+	// which is what the model reads it as.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Name       string `json:"name,omitempty"`
 }
 
 // ToolCall is a native tool call returned by the model.
