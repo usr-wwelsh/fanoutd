@@ -33,6 +33,27 @@ const toolResultBudget = 8000
 // large file from crowding out the rest of the transcript.
 const toolCallBudget = 8000
 
+// transcriptBudget caps the whole replayed trace. The per-item caps above bound
+// one step; nothing bounded the sum, so a run's prompt grew by a step every step
+// and its token cost grew with the square of its length. Real runs reached 160KB
+// of transcript on their final step, and a continued task replays its earlier
+// runs too.
+//
+// Older steps are condensed rather than dropped, since dropping one would strip
+// an assistant turn whose tool results are still in the transcript. What is
+// elided is recoverable: the files are on disk and read_file is a call away.
+const transcriptBudget = 48000
+
+// minFullSteps is how many of the newest steps replay whole whatever the budget
+// says. Condensing the step just taken would hide the result the model is meant
+// to be reacting to, which is the one thing the transcript is for.
+const minFullSteps = 3
+
+// digestBytes is how much of a condensed value survives. Enough to recognise
+// what the step did — the path written, the head of a build log — and not enough
+// to work from, which is the point: work from the file.
+const digestBytes = 240
+
 var ErrAlreadyRunning = errors.New("agent loop already running for this task")
 
 var ErrGroupRunning = errors.New("this breakdown is already running")
@@ -599,13 +620,19 @@ func replayArgs(args string) string {
 	if len(args) <= toolCallBudget {
 		return args
 	}
-	clipped, err := json.Marshal(map[string]string{
-		"note": fmt.Sprintf("arguments too large to keep in the transcript (%d bytes); read the file back if you need them", len(args)),
+	return argsNote(len(args))
+}
+
+// argsNote stands in for arguments that were dropped whole, as a JSON object so
+// a provider that parses what it is handed still gets something valid.
+func argsNote(n int) string {
+	note, err := json.Marshal(map[string]string{
+		"note": fmt.Sprintf("arguments too large to keep in the transcript (%d bytes); read the file back if you need them", n),
 	})
 	if err != nil {
 		return "{}"
 	}
-	return string(clipped)
+	return string(note)
 }
 
 func (l *Loop) fail(taskID string, step int, msg string) {
@@ -689,44 +716,129 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 		{Role: "user", Content: intro.String()},
 	}
 
-	for _, ts := range trace {
-		// A step that made real tool calls replays as the exchange it was: the
-		// assistant turn carrying those calls, then one "tool" message per call.
-		// This is the shape models are trained on, and it is the only shape in
-		// which the model can see the arguments it sent — without it, an agent
-		// that wrote a file has no record of what it put in it and re-reads the
-		// file to find out, which is the loop the repeat guard then aborts.
-		if replayable(ts) {
-			msgs = append(msgs, assistantTurn(ts))
-			for _, c := range ts.Calls {
-				msgs = append(msgs, openrouter.MsgBlock{
-					Role:       "tool",
-					ToolCallID: c.ID,
-					Name:       c.Name,
-					Content:    truncate(c.Result, toolResultBudget),
-				})
-			}
-			continue
-		}
+	return append(msgs, replayTrace(trace)...)
+}
 
-		if ts.Response != "" {
-			content := ts.Response
-			// Replaying a malformed reply in full invites the model to repeat it.
-			if ts.Action == actionParseFailure {
-				content = truncate(content, 500)
-			}
-			msgs = append(msgs, openrouter.MsgBlock{Role: "assistant", Content: content})
-		}
-		feedback := "Continue. What is your next action?"
-		if ts.ToolName != "" {
-			feedback = fmt.Sprintf("Your %s call returned:\n%s\n\nContinue. What is your next action?", ts.ToolName, truncate(ts.ToolResult, toolResultBudget))
-		} else if ts.ToolResult != "" {
-			feedback = fmt.Sprintf("%s\n\nContinue. What is your next action?", ts.ToolResult)
-		}
-		msgs = append(msgs, openrouter.MsgBlock{Role: "user", Content: feedback})
+// replayTrace renders the trace under transcriptBudget. It walks backwards, so
+// the budget is spent on the steps nearest the decision the model is about to
+// make, and everything older is condensed.
+func replayTrace(trace []models.TraceStep) []openrouter.MsgBlock {
+	byStep := make([][]openrouter.MsgBlock, len(trace))
+	used := 0
+	for i := len(trace) - 1; i >= 0; i-- {
+		full := used < transcriptBudget || len(trace)-i <= minFullSteps
+		byStep[i] = replayStep(trace[i], full)
+		used += blocksSize(byStep[i])
 	}
 
+	msgs := []openrouter.MsgBlock{}
+	for _, blocks := range byStep {
+		msgs = append(msgs, blocks...)
+	}
 	return msgs
+}
+
+// replayStep renders one trace step. A condensed step keeps its shape and loses
+// its bulk: the same messages in the same order, so no assistant turn is left
+// holding a tool call whose result went missing.
+func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
+	// A step that made real tool calls replays as the exchange it was: the
+	// assistant turn carrying those calls, then one "tool" message per call.
+	// This is the shape models are trained on, and it is the only shape in
+	// which the model can see the arguments it sent — without it, an agent
+	// that wrote a file has no record of what it put in it and re-reads the
+	// file to find out, which is the loop the repeat guard then aborts.
+	if replayable(ts) {
+		msgs := []openrouter.MsgBlock{assistantTurn(ts, full)}
+		for _, c := range ts.Calls {
+			content := truncate(c.Result, toolResultBudget)
+			if !full {
+				content = digest(c.Result)
+			}
+			msgs = append(msgs, openrouter.MsgBlock{
+				Role:       "tool",
+				ToolCallID: c.ID,
+				Name:       c.Name,
+				Content:    content,
+			})
+		}
+		return msgs
+	}
+
+	msgs := []openrouter.MsgBlock{}
+	if ts.Response != "" {
+		content := ts.Response
+		// Replaying a malformed reply in full invites the model to repeat it.
+		if ts.Action == actionParseFailure {
+			content = truncate(content, 500)
+		}
+		if !full {
+			content = digest(content)
+		}
+		msgs = append(msgs, openrouter.MsgBlock{Role: "assistant", Content: content})
+	}
+
+	result := truncate(ts.ToolResult, toolResultBudget)
+	if !full {
+		result = digest(ts.ToolResult)
+	}
+	feedback := "Continue. What is your next action?"
+	if ts.ToolName != "" {
+		feedback = fmt.Sprintf("Your %s call returned:\n%s\n\nContinue. What is your next action?", ts.ToolName, result)
+	} else if ts.ToolResult != "" {
+		feedback = fmt.Sprintf("%s\n\nContinue. What is your next action?", result)
+	}
+	return append(msgs, openrouter.MsgBlock{Role: "user", Content: feedback})
+}
+
+// blocksSize is what a step costs the transcript. Tool call arguments count:
+// a write_file's content sits in them, and they are most of a large step.
+func blocksSize(msgs []openrouter.MsgBlock) int {
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Content)
+		for _, c := range m.ToolCalls {
+			n += len(c.Function.Arguments) + len(c.Function.Name)
+		}
+	}
+	return n
+}
+
+// digest keeps the head of a value and says how much it dropped. The head is
+// where a tool result identifies itself — the path written, the first compiler
+// error — so it stays recognisable as the step it was.
+func digest(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= digestBytes {
+		return s
+	}
+	return fmt.Sprintf("%s\n...[%d more bytes from an earlier step, elided to make room — read the file back if you need them]",
+		s[:digestBytes], len(s)-digestBytes)
+}
+
+// condenseArgs shrinks a call's arguments by field rather than by byte offset.
+// The structure is what the model needs from an old call — which path it wrote,
+// which command it ran — and the file content it also carries is the part that
+// costs. Clipping the string would leave invalid JSON, which some providers
+// parse rather than pass through.
+func condenseArgs(args string) string {
+	if len(args) <= digestBytes {
+		return args
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(args), &fields); err != nil {
+		return argsNote(len(args))
+	}
+	for k, v := range fields {
+		if s, ok := v.(string); ok && len(s) > digestBytes {
+			fields[k] = fmt.Sprintf("[%d bytes elided]", len(s))
+		}
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return argsNote(len(args))
+	}
+	return string(out)
 }
 
 // replayable reports whether a step can go back as a native exchange. Every call
@@ -748,10 +860,13 @@ func replayable(ts models.TraceStep) bool {
 
 // assistantTurn rebuilds the turn that made a step's calls. Content is whatever
 // the model wrote alongside them, which is often nothing.
-func assistantTurn(ts models.TraceStep) openrouter.MsgBlock {
+func assistantTurn(ts models.TraceStep, full bool) openrouter.MsgBlock {
 	calls := make([]openrouter.ToolCall, 0, len(ts.Calls))
 	for _, c := range ts.Calls {
 		args := c.Arguments
+		if !full {
+			args = condenseArgs(args)
+		}
 		if args == "" {
 			args = "{}"
 		}
@@ -761,7 +876,11 @@ func assistantTurn(ts models.TraceStep) openrouter.MsgBlock {
 			Function: openrouter.FunctionCall{Name: c.Name, Arguments: args},
 		})
 	}
-	return openrouter.MsgBlock{Role: "assistant", Content: ts.Response, ToolCalls: calls}
+	content := ts.Response
+	if !full {
+		content = digest(content)
+	}
+	return openrouter.MsgBlock{Role: "assistant", Content: content, ToolCalls: calls}
 }
 
 // pendingCall is one tool call the model asked for, with the identity the
