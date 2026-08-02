@@ -289,6 +289,22 @@ func (l *Loop) Shutdown(ctx context.Context) bool {
 	}
 }
 
+// DiscardBuildDir drops the scratch a task's shell commands built up. Deleting a
+// task removes its workspace, but the build directory sits outside it and lived
+// on: a board that had run 62 tasks was holding build directories for 23 that no
+// longer existed.
+//
+// It is not an error for a server without a sandbox, which never made one.
+func (l *Loop) DiscardBuildDir(taskID string) error {
+	l.mu.Lock()
+	sandbox := l.sandbox
+	l.mu.Unlock()
+	if sandbox == nil {
+		return nil
+	}
+	return sandbox.DiscardTask(taskID)
+}
+
 // Workspace returns the sandbox backing a task. Tasks that continue an earlier
 // run share one, so this resolves through the task's workspace ID.
 func (l *Loop) Workspace(taskID string) (*Workspace, error) {

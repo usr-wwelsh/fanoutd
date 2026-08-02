@@ -81,6 +81,11 @@ func main() {
 		} else {
 			loop.SetSandbox(sb)
 			log.Printf("shell commands enabled (%s)\n", sb.Describe())
+			if n, err := sb.ReapBuildDirs(liveTaskIDs(s)); err != nil {
+				log.Printf("could not reap orphaned build directories: %v\n", err)
+			} else if n > 0 {
+				log.Printf("reaped %d orphaned build director(ies)\n", n)
+			}
 		}
 	}
 	srv := server.New(s, loop, client, cfg, ui())
@@ -111,4 +116,20 @@ func main() {
 		log.Printf("gave up waiting for agent runs after %s; they will be reclaimed at the next start", loopDrainTimeout)
 	}
 	log.Println("stopped")
+}
+
+// liveTaskIDs is the set a build directory has to belong to in order to survive
+// the reap. A store that cannot be read returns nothing, and nothing is reaped —
+// deleting scratch is not worth doing on a guess.
+func liveTaskIDs(s *store.Store) map[string]bool {
+	tasks, err := s.ListTasks()
+	if err != nil {
+		log.Printf("could not list tasks to reap build directories: %v\n", err)
+		return nil
+	}
+	live := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		live[t.ID] = true
+	}
+	return live
 }

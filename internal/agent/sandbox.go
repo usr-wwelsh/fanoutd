@@ -315,6 +315,49 @@ func (s *Sandbox) taskBuildDir(taskID string) (string, error) {
 	return dir, nil
 }
 
+// DiscardTask removes a task's private build directory. Nothing in there is a
+// deliverable — it is compiler scratch and a fake HOME — so it goes with the
+// task rather than with the workspace, which is shared and may outlive it.
+func (s *Sandbox) DiscardTask(taskID string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	dir := filepath.Join(s.buildDir, taskID)
+	// A task id is a hex string from the store, but this is a recursive delete
+	// keyed on it, so it is checked rather than trusted.
+	if filepath.Dir(dir) != s.buildDir || filepath.Base(dir) != taskID {
+		return fmt.Errorf("refusing to remove build directory for %q", taskID)
+	}
+	return os.RemoveAll(dir)
+}
+
+// ReapBuildDirs removes build directories belonging to tasks that no longer
+// exist, and reports how many it dropped. Deleting a task now takes its scratch
+// with it, but nothing collected what earlier versions left behind, and a
+// process that was killed mid-run never got to delete anything.
+func (s *Sandbox) ReapBuildDirs(live map[string]bool) (int, error) {
+	// A nil set means the caller could not find out which tasks exist, which is
+	// not the same as there being none. An empty board is an empty map.
+	if live == nil {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(s.buildDir)
+	if err != nil {
+		return 0, err
+	}
+	dropped := 0
+	for _, e := range entries {
+		if !e.IsDir() || live[e.Name()] {
+			continue
+		}
+		if err := s.DiscardTask(e.Name()); err != nil {
+			return dropped, err
+		}
+		dropped++
+	}
+	return dropped, nil
+}
+
 // Run executes command in workDir and returns its combined output. A command
 // that fails is not an error: a failing build's output is the useful part, so
 // only being unable to run at all returns one.

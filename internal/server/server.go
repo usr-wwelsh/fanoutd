@@ -296,6 +296,12 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
+	// Build scratch goes unconditionally: files=keep is about the deliverables in
+	// the workspace, and there are none in here.
+	if err := s.loop.DiscardBuildDir(id); err != nil {
+		log.Printf("deleted task %s but could not remove its build directory: %v\n", id, err)
+	}
+
 	if wsErr == nil && r.URL.Query().Get("files") != "keep" {
 		remaining, err := s.store.CountTasksInWorkspace(workspaceID(task))
 		if err != nil {
@@ -820,6 +826,10 @@ func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request, id string) 
 		if err := s.store.DeleteTask(t.ID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Each subtask has build scratch of its own, however shared the workspace.
+		if err := s.loop.DiscardBuildDir(t.ID); err != nil {
+			log.Printf("deleted task %s but could not remove its build directory: %v\n", t.ID, err)
 		}
 	}
 
