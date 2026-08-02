@@ -111,26 +111,6 @@ func (c *Client) send(ctx context.Context, hc *http.Client, method, path string,
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *Client) Health(ctx context.Context) error {
-	var out map[string]string
-	return c.do(ctx, http.MethodGet, "/api/health", nil, &out)
-}
-
-// AuthState reports whether the server requires a token and whether this
-// client's token satisfies it.
-type AuthState struct {
-	Required      bool `json:"required"`
-	Authenticated bool `json:"authenticated"`
-}
-
-func (c *Client) Auth(ctx context.Context) (*AuthState, error) {
-	var out AuthState
-	if err := c.do(ctx, http.MethodGet, "/api/auth", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 func (c *Client) ListTasks(ctx context.Context) ([]models.Task, error) {
 	var out []models.Task
 	if err := c.do(ctx, http.MethodGet, "/api/tasks", nil, &out); err != nil {
