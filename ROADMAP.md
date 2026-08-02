@@ -75,9 +75,8 @@ Not a phase — folded into each step as it lands. Coverage is broad: the respon
 parser, the CLI end to end, streaming and tool-call fragment reassembly, the
 concede path, shutdown and reclaim, `Workspace.resolve`, claims and scheduling
 under `-race`, the breakdown parser and whole breakdown runs, the group routes,
-and the transcript budget.
+the transcript budget, and `nextTitle`.
 
-Still untested, roughly in order of what a bug would cost:
-
-- **`nextTitle`** in `internal/server/server.go`. Cheap, pure, and it parses
-  integers out of user-supplied strings.
+Nothing on the existing surface is knowingly untested. Step 3 brings its own:
+the clone caps, the refusal to seed once a trace exists, and whatever shape the
+seeded-workspace intro settles on.
