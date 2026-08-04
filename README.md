@@ -207,9 +207,24 @@ claims arbitrate concurrent writes rather than stale reads. Its rework task gets
 the shared workspace but no group, so it is free to fix whichever file the
 findings name.
 
+A rework's own verdict settles the work it repaired. Rejected work stays in
+Review while its rework runs, and nothing else ever looks at those rows again —
+so a rework that passes files them with itself, and one that is rejected again
+carries them round with it until the round limit parks the lot. The reviewer is
+held to the original goal rather than to the findings, or a rework passes having
+fixed the one line named and broken everything around it.
+
 Verdicts are recorded on the task's own trace, and skipped when that task's
 transcript is replayed — an author handed a critique of itself as a turn it made
 will argue with it.
+
+A verdict is delivered by the goroutine that ran the task, so a restart between a
+run settling and its review finishing would strand the work in Review: done,
+unjudged, and not what `fanout blocked` lists. The server sweeps for that at
+startup and delivers the verdicts the previous process owed, one at a time, in
+the background — a breakdown counting as one and a rework as covering what it
+repairs. With `FANOUT_REVIEW` since turned off, it says how much is sitting there
+rather than judging it.
 
 ## Setup
 
