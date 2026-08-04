@@ -19,6 +19,10 @@ type Config struct {
 	BaseURL         string
 	// MaxParallel caps how many subtasks of one breakdown run at once.
 	MaxParallel int
+	// MaxSteps bounds one agent run. Zero leaves the agent's own default, which
+	// is the only sane reading of an unset value: a budget of nothing would
+	// concede every task on its first step.
+	MaxSteps int
 	// Token gates the API when set. Empty leaves the server open, which is the
 	// default for local use.
 	Token string
@@ -78,6 +82,9 @@ func Load() Config {
 	}
 	if n, err := strconv.Atoi(get("FANOUT_MAX_PARALLEL")); err == nil && n > 0 {
 		cfg.MaxParallel = n
+	}
+	if n, err := strconv.Atoi(get("FANOUT_MAX_STEPS")); err == nil && n > 0 {
+		cfg.MaxSteps = n
 	}
 
 	cfg.Review = truthy(get("FANOUT_REVIEW"))

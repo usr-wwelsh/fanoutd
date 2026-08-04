@@ -67,6 +67,19 @@ var ErrGroupNotFound = errors.New("no such group")
 // agents on one OpenRouter key earn rate limits rather than throughput.
 const defaultMaxParallel = 3
 
+// defaultMaxSteps bounds one run. It is a budget, not a safety rail: the agent
+// stops itself on repetition long before this, so the limit only ever bites a
+// run that is still making progress. Set it too low and a task that was three
+// steps from a clean build concedes with work that does not compile, and the
+// subtasks waiting on it build against the wreckage.
+//
+// It was 20, which every subtask of a five-part Go breakdown hit while still
+// in its build-fix loop. At 40 the same idea on the same model built clean and
+// passed its tests. A model that converges quickly never reaches either number,
+// so the cost of the higher default falls only on runs that were going to
+// concede anyway.
+const defaultMaxSteps = 40
+
 const systemPrompt = `You are an autonomous task agent working toward a goal.
 
 You have a private workspace directory and a set of file tools: write_file, read_file,
@@ -171,10 +184,21 @@ func NewLoop(s *store.Store, c *openrouter.Client, outputDir string) *Loop {
 		client:      c,
 		cancels:     make(map[string]context.CancelFunc),
 		groups:      make(map[string]context.CancelFunc),
-		maxSteps:    20,
+		maxSteps:    defaultMaxSteps,
 		maxParallel: defaultMaxParallel,
 		outputDir:   outputDir,
 	}
+}
+
+// SetMaxSteps bounds how many steps one run gets before it concedes. Values
+// below one are ignored, so an unset config leaves the default standing.
+func (l *Loop) SetMaxSteps(n int) {
+	if n < 1 {
+		return
+	}
+	l.mu.Lock()
+	l.maxSteps = n
+	l.mu.Unlock()
 }
 
 // SetMaxParallel bounds concurrent subtasks within one breakdown. Values below
@@ -301,6 +325,15 @@ func (l *Loop) parallelLimit() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.maxParallel
+}
+
+// stepLimit reads the step budget under the lock, for the same reason: a run
+// consults it on every step, and runs already in flight share the Loop with
+// whoever sets it.
+func (l *Loop) stepLimit() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.maxSteps
 }
 
 // Shutdown cancels every active run and waits for the goroutines to record
@@ -486,7 +519,11 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 	step := len(prior)
 	parseFailures := 0
 
-	for i := 0; i < l.maxSteps; i++ {
+	// Read once, so a run keeps the budget it started with and the message it
+	// concedes with names the number it actually got.
+	maxSteps := l.stepLimit()
+
+	for i := 0; i < maxSteps; i++ {
 		if stopped(ctx) {
 			l.markStopped(taskID, step)
 			return
@@ -632,7 +669,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		}
 	}
 
-	l.concede(taskID, step, fmt.Sprintf("reached the %d step limit without meeting the goal", l.maxSteps))
+	l.concede(taskID, step, fmt.Sprintf("reached the %d step limit without meeting the goal", maxSteps))
 }
 
 // finish files a run the model signed off on.

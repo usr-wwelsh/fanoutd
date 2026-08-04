@@ -230,3 +230,21 @@ func TestSetMaxParallelIgnoresNonsense(t *testing.T) {
 		t.Errorf("limit = %d, want 8", got)
 	}
 }
+
+func TestSetMaxStepsIgnoresNonsense(t *testing.T) {
+	l, _ := testLoop(t)
+	if got := l.stepLimit(); got != defaultMaxSteps {
+		t.Fatalf("default limit = %d, want %d", got, defaultMaxSteps)
+	}
+	l.SetMaxSteps(0)
+	l.SetMaxSteps(-4)
+	if got := l.stepLimit(); got != defaultMaxSteps {
+		t.Errorf("limit = %d after nonsense values, want the default kept", got)
+	}
+	// Deliberately not the default, so the assertion still means something if
+	// the default moves again.
+	l.SetMaxSteps(65)
+	if got := l.stepLimit(); got != 65 {
+		t.Errorf("limit = %d, want 65", got)
+	}
+}

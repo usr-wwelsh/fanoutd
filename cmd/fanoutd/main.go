@@ -62,6 +62,7 @@ func main() {
 	client := openrouter.NewClient(cfg.OpenRouterKey, cfg.OpenRouterModel, cfg.BaseURL)
 	loop := agent.NewLoop(s, client, cfg.OutputDir)
 	loop.SetMaxParallel(cfg.MaxParallel)
+	loop.SetMaxSteps(cfg.MaxSteps)
 
 	if cfg.Review {
 		loop.SetReview(true, cfg.ReviewModel)
