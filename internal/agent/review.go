@@ -123,22 +123,55 @@ type reviewTarget struct {
 	summary  string
 }
 
-// reviewAfterRun reviews a solo task whose run has just ended. Subtasks of a
-// breakdown are skipped here and reviewed with their group: bouncing one subtask
-// on its own would invalidate every sibling that already read its output, and
-// nothing tracks a stale read.
+// reviewAfterRun reviews a task whose run has just ended. A subtask is never
+// judged on its own — bouncing one back would invalidate every sibling that
+// already read its output, and nothing tracks a stale read — so it hands off to
+// its group, which is reviewed only once every subtask is in.
 func (l *Loop) reviewAfterRun(ctx context.Context, taskID string) {
 	if !l.reviewEnabled() || stopped(ctx) {
 		return
 	}
 	task, err := l.store.GetTask(taskID)
-	if err != nil || task == nil || task.GroupID != "" {
+	if err != nil || task == nil {
+		return
+	}
+	if task.GroupID != "" {
+		l.reviewGroupAfterSolo(ctx, task.GroupID)
 		return
 	}
 	if !awaitingReview(*task) {
 		return
 	}
 	l.runReview(ctx, l.soloTarget(*task))
+}
+
+// reviewGroupAfterSolo delivers a breakdown's verdict when the subtask that
+// completed it was run on its own rather than by the schedule. That is the
+// ordinary way a halted plan is finished off: a subtask is stopped, or the
+// server restarts under it, and somebody presses start on the one that did not
+// finish. The schedule goroutine that would have reviewed the group is long
+// gone by then, so nothing was left that would ever ask for a verdict — the
+// group sat complete in the review column, and pressing start on it again only
+// re-ran the last subtask to the same place.
+//
+// The group is claimed for the duration, which is also the whole guard: a
+// schedule already holds the claim and reviews the group itself when it ends,
+// and two siblings ending at the same moment produce one verdict rather than
+// two.
+func (l *Loop) reviewGroupAfterSolo(ctx context.Context, groupID string) {
+	groupCtx, ok := l.claimGroup(ctx, groupID)
+	if !ok {
+		return
+	}
+	defer l.clearGroup(groupID)
+
+	// nil target means the group is not all in yet, which is the common case:
+	// every earlier subtask of a running breakdown passes through here.
+	target, err := l.groupTarget(groupID)
+	if err != nil || target == nil {
+		return
+	}
+	l.runReview(groupCtx, *target)
 }
 
 // soloTarget is what one verdict on a solo run covers. Usually that is the task

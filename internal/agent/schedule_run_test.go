@@ -304,6 +304,46 @@ func TestRunGroupSkipsDependentsOfFailures(t *testing.T) {
 	}
 }
 
+// Resuming a halted breakdown runs what is left of it. Re-running the subtasks
+// that already filed their work spends the run again to reach the state it was
+// already in — and for the anchor, reaches goal-met on a step it had reached
+// before the plan was ever stopped.
+func TestRunGroupResumesWithoutRepeatingFiledWork(t *testing.T) {
+	f := &fakeModel{}
+	l, s := scheduledLoop(t, f)
+	groupID, _, ids := makeGroup(t, s, []struct {
+		title  string
+		writes []string
+		reads  []string
+	}{
+		{"schema", []string{"schema.json"}, nil},
+		{"impl", []string{"board.js"}, []string{"schema.json"}},
+		{"integration", []string{"index.html"}, []string{"board.js"}},
+	})
+	// The state a stopped plan leaves behind: two subtasks in, the last one not.
+	for _, title := range []string{"schema", "impl"} {
+		if err := s.SetTaskInReview(ids[title], "wrote "+title); err != nil {
+			t.Fatalf("SetTaskInReview: %v", err)
+		}
+	}
+
+	plan, err := l.PlanGroup(groupID)
+	if err != nil {
+		t.Fatalf("PlanGroup: %v", err)
+	}
+	l.runGroup(context.Background(), plan)
+
+	if got := f.seen(); len(got) != 1 || got[0] != "integration" {
+		t.Errorf("model saw %v, want only the subtask that had not finished", got)
+	}
+	// And the one that had not finished did run, rather than being held behind
+	// dependencies that settled in an earlier process.
+	last, _ := s.GetTask(ids["integration"])
+	if last.Status != models.StatusDone {
+		t.Errorf("integration status = %q (%s), want done", last.Status, last.Error)
+	}
+}
+
 func TestStartGroupRefusesSecondSchedule(t *testing.T) {
 	f := &fakeModel{delay: 2 * time.Second}
 	l, s := scheduledLoop(t, f)

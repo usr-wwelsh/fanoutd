@@ -456,9 +456,13 @@ func TestReviewCannotChangeTheWork(t *testing.T) {
 
 // A subtask cannot be reviewed on its own: sending one back would invalidate
 // every sibling that already read its output, and nothing tracks a stale read.
+// So a subtask that finishes while a sibling is still out waits for it.
 func TestReviewLeavesSubtasksToTheirGroup(t *testing.T) {
 	l, s := reviewLoop(t, reviewCall{rejectTool, map[string]string{"findings": "broken"}})
-	task := awaiting(t, s, store.NewTask{GroupID: "g1"}, "wrote a part")
+	task := awaiting(t, s, store.NewTask{GroupID: "g1", WorkspaceID: "ws1"}, "wrote a part")
+	if _, err := s.CreateTaskFrom(store.NewTask{Title: "the other part", GroupID: "g1", WorkspaceID: "ws1"}); err != nil {
+		t.Fatalf("CreateTaskFrom: %v", err)
+	}
 
 	l.reviewAfterRun(context.Background(), task.ID)
 
@@ -469,6 +473,47 @@ func TestReviewLeavesSubtasksToTheirGroup(t *testing.T) {
 	if other := findRework(t, s, task.ID); other != nil {
 		t.Error("a subtask was sent back on its own")
 	}
+}
+
+// The last subtask of a halted breakdown is ordinarily restarted by hand, and
+// the schedule goroutine that would have reviewed the group is gone by then.
+// The run that completes the group asks for the verdict instead, or the work
+// sits in the review column with nothing left that would ever judge it.
+func TestSubtaskFinishedAloneReviewsItsGroup(t *testing.T) {
+	l, s := reviewLoop(t, reviewCall{rejectTool, map[string]string{"findings": "index.html is empty"}})
+	first := awaiting(t, s, store.NewTask{Title: "stylesheet", GroupID: "g1", WorkspaceID: "ws1"}, "wrote style.css")
+	last := awaiting(t, s, store.NewTask{Title: "integration", GroupID: "g1", WorkspaceID: "ws1"}, "wrote index.html")
+
+	l.reviewAfterRun(context.Background(), last.ID)
+
+	rework := findRework(t, s, last.ID)
+	if rework == nil {
+		t.Fatal("the group was never reviewed once its last subtask came in")
+	}
+	// One verdict over the whole breakdown, not one per subtask.
+	for _, id := range []string{first.ID, last.ID} {
+		got, _ := s.GetTask(id)
+		if got.Verdict != models.VerdictRejected {
+			t.Errorf("task %s verdict = %q, want the group's", got.Title, got.Verdict)
+		}
+	}
+}
+
+// A verdict is work being done to the group, so a start arriving while it runs
+// must not re-run the subtasks the reviewer is reading.
+func TestGroupUnderReviewRefusesAStart(t *testing.T) {
+	l, s := reviewLoop(t)
+	awaiting(t, s, store.NewTask{GroupID: "g1"}, "wrote it")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, ok := l.claimGroup(ctx, "g1"); !ok {
+		t.Fatal("could not claim an idle group")
+	}
+	if err := l.StartGroup("g1"); err != ErrGroupRunning {
+		t.Errorf("StartGroup = %v, want %v", err, ErrGroupRunning)
+	}
+	l.clearGroup("g1")
 }
 
 // The anchor is where a group's verdict and its rework hang. The schedule

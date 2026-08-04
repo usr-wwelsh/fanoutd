@@ -202,14 +202,10 @@ func (l *Loop) StartGroup(groupID string) error {
 		return err
 	}
 
-	l.mu.Lock()
-	if _, running := l.groups[groupID]; running {
-		l.mu.Unlock()
+	ctx, ok := l.claimGroup(context.Background(), groupID)
+	if !ok {
 		return ErrGroupRunning
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	l.groups[groupID] = cancel
-	l.mu.Unlock()
 
 	l.wg.Add(1)
 	go func() {
@@ -261,6 +257,22 @@ func (l *Loop) GroupView(groupID string) (*models.GroupPlan, error) {
 	}, nil
 }
 
+// claimGroup registers a breakdown as busy and returns the context its work runs
+// under, or false if something already holds it. A review takes the claim as
+// well as a schedule does: a verdict is work being done to the whole group, and
+// a start arriving underneath it would re-run the subtasks the reviewer is in
+// the middle of reading.
+func (l *Loop) claimGroup(parent context.Context, groupID string) (context.Context, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, busy := l.groups[groupID]; busy {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	l.groups[groupID] = cancel
+	return ctx, true
+}
+
 func (l *Loop) IsGroupRunning(groupID string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -295,18 +307,28 @@ func (l *Loop) clearGroup(groupID string) {
 // of magnitude between subtasks, lockstep waves would leave slots idle behind
 // the slowest sibling in each one.
 func (l *Loop) runGroup(ctx context.Context, plan *Plan) {
-	pending := map[string]bool{}
-	for _, wave := range plan.Waves {
-		for _, id := range wave {
-			pending[id] = true
-		}
-	}
-
 	// A task is "settled" once it will never run again, whether it finished,
 	// failed, or was skipped. Dependents key off outcome, not settlement.
 	succeeded := map[string]bool{}
 	failed := map[string]bool{}
 	running := map[string]<-chan struct{}{}
+
+	// Resuming a schedule runs what is left of it, not the whole thing again.
+	// A halted breakdown is ordinarily restarted from the board, and starting it
+	// re-ran subtasks that had already filed their work: the same files written
+	// twice, the same tokens spent, and the anchor reaching goal-met again on a
+	// step it had already reached. Work already filed counts as succeeded, which
+	// is what its dependents were waiting for anyway.
+	pending := map[string]bool{}
+	for _, wave := range plan.Waves {
+		for _, id := range wave {
+			if l.taskFiled(id) {
+				succeeded[id] = true
+				continue
+			}
+			pending[id] = true
+		}
+	}
 
 	for len(pending) > 0 || len(running) > 0 {
 		if ctx.Err() != nil {
@@ -448,6 +470,18 @@ func (l *Loop) taskSucceeded(taskID string) bool {
 		return false
 	}
 	return task.Status == models.StatusDone
+}
+
+// taskFiled reports a subtask whose work is done and put away — awaiting a
+// verdict, or already accepted. It is deliberately narrower than "done": a
+// finished run that somebody dragged back to To-Do was dragged there to be run
+// again, and the column is the only place that intent is recorded.
+func (l *Loop) taskFiled(taskID string) bool {
+	task, err := l.store.GetTask(taskID)
+	if err != nil || task == nil || task.Status != models.StatusDone {
+		return false
+	}
+	return task.Column == models.ColumnReview || task.Column == models.ColumnFinished
 }
 
 func (l *Loop) blockTask(taskID, blocker string) {

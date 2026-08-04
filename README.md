@@ -201,11 +201,21 @@ work stops going round and is parked with an `error` status, which is what
 parks the same way.
 
 Solo tasks are reviewed one at a time. **A breakdown is reviewed whole**, once
-its whole schedule has settled and only if every subtask finished: sending one
-subtask back would invalidate every sibling that already read its output, and the
-claims arbitrate concurrent writes rather than stale reads. Its rework task gets
-the shared workspace but no group, so it is free to fix whichever file the
-findings name.
+every subtask is in and only if every one of them finished: sending one subtask
+back would invalidate every sibling that already read its output, and the claims
+arbitrate concurrent writes rather than stale reads. Its rework task gets the
+shared workspace but no group, so it is free to fix whichever file the findings
+name.
+
+Whichever run completes the group asks for that verdict, whether it was the
+schedule or a single subtask somebody restarted by hand after a stop. The group
+is claimed while the review runs, so a start arriving underneath it is refused
+rather than re-running what the reviewer is reading.
+
+Starting a breakdown that is part-way through **resumes** it: subtasks already
+awaiting review or filed as done are left alone and count as satisfied for
+whatever depends on them, and only what did not finish is run. Dragging a plan
+back to To-Do is how you ask for the whole thing again.
 
 A rework's own verdict settles the work it repaired. Rejected work stays in
 Review while its rework runs, and nothing else ever looks at those rows again —
