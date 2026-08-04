@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const taskCols = `id, title, description, goal, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, created_at, updated_at`
+const taskCols = `id, title, description, goal, criteria, review_round, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, created_at, updated_at`
 
 type Store struct {
 	db *sql.DB
@@ -53,6 +53,8 @@ func initSchema(db *sql.DB) error {
 		title TEXT NOT NULL,
 		description TEXT NOT NULL DEFAULT '',
 		goal TEXT NOT NULL DEFAULT '',
+		criteria TEXT NOT NULL DEFAULT '',
+		review_round INTEGER NOT NULL DEFAULT 0,
 		column TEXT NOT NULL DEFAULT 'ideas',
 		summary TEXT NOT NULL DEFAULT '',
 		finish_flag INTEGER NOT NULL DEFAULT 0,
@@ -112,6 +114,8 @@ func initSchema(db *sql.DB) error {
 		{"tasks", "workspace_id", "TEXT NOT NULL DEFAULT ''"},
 		{"tasks", "parent_id", "TEXT NOT NULL DEFAULT ''"},
 		{"tasks", "group_id", "TEXT NOT NULL DEFAULT ''"},
+		{"tasks", "criteria", "TEXT NOT NULL DEFAULT ''"},
+		{"tasks", "review_round", "INTEGER NOT NULL DEFAULT 0"},
 		{"trace_steps", "tool_name", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_result", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "calls", "TEXT NOT NULL DEFAULT ''"},
@@ -169,6 +173,11 @@ type NewTask struct {
 	Title       string
 	Description string
 	Goal        string
+	// Criteria is what review will check the output against, one per line.
+	Criteria string
+	// ReviewRound carries forward from the task this one reworks, so the bounce
+	// between todo and review is bounded across the chain rather than per task.
+	ReviewRound int
 	Model       string
 	WorkspaceID string
 	ParentID    string
@@ -187,8 +196,9 @@ func (s *Store) CreateTaskFrom(nt NewTask) (*models.Task, error) {
 	}
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, nt.Title, nt.Description, nt.Goal, "ideas", "", false, models.StatusIdle, "",
+		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, nt.Title, nt.Description, nt.Goal, nt.Criteria, nt.ReviewRound,
+		"ideas", "", false, models.StatusIdle, "",
 		nt.Model, workspaceID, nt.ParentID, nt.GroupID, now, now,
 	)
 	if err != nil {
@@ -209,9 +219,9 @@ func (s *Store) GetTask(id string) (*models.Task, error) {
 
 // scanTask keeps the column order in one place, since taskCols is shared.
 func scanTask(scan func(...any) error, t *models.Task) error {
-	return scan(&t.ID, &t.Title, &t.Description, &t.Goal, &t.Column, &t.Summary,
-		&t.FinishFlag, &t.Status, &t.Error, &t.Model, &t.WorkspaceID, &t.ParentID,
-		&t.GroupID, &t.CreatedAt, &t.UpdatedAt)
+	return scan(&t.ID, &t.Title, &t.Description, &t.Goal, &t.Criteria, &t.ReviewRound,
+		&t.Column, &t.Summary, &t.FinishFlag, &t.Status, &t.Error, &t.Model,
+		&t.WorkspaceID, &t.ParentID, &t.GroupID, &t.CreatedAt, &t.UpdatedAt)
 }
 
 func (s *Store) ListTasks() ([]models.Task, error) {
@@ -372,11 +382,36 @@ func (s *Store) ClearFinishFlag(id string) error {
 	return err
 }
 
-func (s *Store) SetTaskFinished(id, summary string) error {
+// settle files a run that ended with output: its summary, the finish mark the
+// loop reads as a stop signal, and done status. Only the column differs between
+// the two ways that can happen, and separating them is what lets "the agent
+// stopped" and "the work was accepted" stop being the same event.
+func (s *Store) settle(id, column, summary string) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
 		"UPDATE tasks SET column=?, summary=?, finish_flag=?, status=?, error='', updated_at=? WHERE id=?",
-		"finished", summary, true, models.StatusDone, now, id,
+		column, summary, true, models.StatusDone, now, id,
+	)
+	return err
+}
+
+// SetTaskFinished accepts the work: the run is over and nothing further is owed.
+func (s *Store) SetTaskFinished(id, summary string) error {
+	return s.settle(id, models.ColumnFinished, summary)
+}
+
+// SetTaskInReview parks a finished run in front of a reviewer. The task is done
+// in the sense that no agent is working on it; whether it is finished is the
+// question the review answers.
+func (s *Store) SetTaskInReview(id, summary string) error {
+	return s.settle(id, models.ColumnReview, summary)
+}
+
+// SetTaskSummary rewrites the summary alone, for a verdict that changes what is
+// known about a run without moving it.
+func (s *Store) SetTaskSummary(id, summary string) error {
+	_, err := s.db.Exec(
+		"UPDATE tasks SET summary=?, updated_at=? WHERE id=?", summary, time.Now().UTC(), id,
 	)
 	return err
 }

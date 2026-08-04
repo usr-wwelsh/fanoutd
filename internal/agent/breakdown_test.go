@@ -139,10 +139,10 @@ func TestValidateRejectsTwoWritersOfOnePath(t *testing.T) {
 
 func TestValidateAcceptsACleanPartition(t *testing.T) {
 	err := validateBreakdown(planOf(
-		Subtask{Title: "schema", Goal: "g", Writes: []string{"schema.json"}},
-		Subtask{Title: "impl", Goal: "g", Writes: []string{"board.js"}, Reads: []string{"schema.json"}},
+		Subtask{Title: "schema", Goal: "g", Writes: []string{"schema.json"}, Criteria: []string{"schema.json parses as JSON"}},
+		Subtask{Title: "impl", Goal: "g", Writes: []string{"board.js"}, Reads: []string{"schema.json"}, Criteria: []string{"mount(el) renders one cell per entry"}},
 		// The integration node: it owns the shared file and reads its siblings.
-		Subtask{Title: "index", Goal: "g", Writes: []string{"index.html"}, Reads: []string{"board.js", "schema.json"}, Integration: true},
+		Subtask{Title: "index", Goal: "g", Writes: []string{"index.html"}, Reads: []string{"board.js", "schema.json"}, Integration: true, Criteria: []string{"index.html opens from file:// with no console errors"}},
 	))
 	if err != nil {
 		t.Errorf("a clean partition was rejected: %v", err)
@@ -214,8 +214,8 @@ func TestValidateRejectsCyclicReads(t *testing.T) {
 // Reading what you also write is not an edge, so it cannot be a cycle either.
 func TestValidateAllowsSelfReads(t *testing.T) {
 	err := validateBreakdown(planOf(
-		Subtask{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"a.md"}},
-		Subtask{Title: "b", Goal: "g", Writes: []string{"b.md"}},
+		Subtask{Title: "a", Goal: "g", Writes: []string{"a.md"}, Reads: []string{"a.md"}, Criteria: []string{"a.md lists every field"}},
+		Subtask{Title: "b", Goal: "g", Writes: []string{"b.md"}, Criteria: []string{"b.md lists every field"}},
 	))
 	if err != nil {
 		t.Errorf("self-read rejected: %v", err)
@@ -243,11 +243,53 @@ func TestValidateRejectsASeamWithNoContract(t *testing.T) {
 // the retry on one would only push a runnable plan towards the fallback.
 func TestValidateAllowsNoContractWhenNothingReads(t *testing.T) {
 	err := validateBreakdown(&breakdownPlan{Subtasks: []Subtask{
-		{Title: "a", Goal: "g", Writes: []string{"a.md"}},
-		{Title: "b", Goal: "g", Writes: []string{"b.md"}},
+		{Title: "a", Goal: "g", Writes: []string{"a.md"}, Criteria: []string{"a.md lists every field"}},
+		{Title: "b", Goal: "g", Writes: []string{"b.md"}, Criteria: []string{"b.md lists every field"}},
 	}})
 	if err != nil {
 		t.Errorf("independent subtasks rejected for want of a contract: %v", err)
+	}
+}
+
+// Criteria are what review checks against, so a plan without them is a plan
+// nobody can judge. They are demanded after the structural rules: a partition
+// with two writers on one path has to be redrawn whatever its criteria say.
+func TestValidateDemandsCriteria(t *testing.T) {
+	err := validateBreakdown(planOf(
+		Subtask{Title: "schema", Goal: "g", Writes: []string{"a.md"}, Criteria: []string{"a.md parses"}},
+		Subtask{Title: "impl", Goal: "g", Writes: []string{"b.md"}},
+	))
+	if err == nil {
+		t.Fatal("a plan with an uncheckable subtask passed validation")
+	}
+	// Fed back to the model verbatim, so it has to name the subtask and the field.
+	for _, want := range []string{"impl", "criteria"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+
+	// The structural faults still come first, or the model is sent off to write
+	// criteria for a partition it has to redraw anyway.
+	err = validateBreakdown(planOf(
+		Subtask{Title: "impl", Goal: "g", Writes: []string{"board.js"}},
+		Subtask{Title: "tests", Goal: "g", Writes: []string{"board.js"}},
+	))
+	if err == nil || !strings.Contains(err.Error(), "board.js") {
+		t.Errorf("contested path reported as %v, want the conflict named first", err)
+	}
+}
+
+func TestParseBreakdownDropsBlankCriteria(t *testing.T) {
+	plan, err := parseBreakdown(`{"subtasks": [
+	  {"title": "a", "goal": "g", "writes": ["a.md"], "criteria": ["  a.md parses  ", "", "   "]}]}`)
+	if err != nil {
+		t.Fatalf("parseBreakdown: %v", err)
+	}
+	// Criteria are stored newline-separated, so a blank entry would survive as a
+	// blank line the reviewer is asked to check.
+	if got := plan.Subtasks[0].Criteria; !reflect.DeepEqual(got, []string{"a.md parses"}) {
+		t.Errorf("criteria = %#v, want the one non-empty entry, trimmed", got)
 	}
 }
 

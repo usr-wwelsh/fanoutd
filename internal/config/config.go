@@ -24,6 +24,15 @@ type Config struct {
 	Token string
 	// EnvFile records which file the settings were read from, or "" for none.
 	EnvFile string
+	// Review sends a finished run to a second agent before it lands in the
+	// finished column. Off by default: it spends a second model call per task and
+	// can create rework tasks of its own, which is not something to switch on
+	// behind an operator's back.
+	Review bool
+	// ReviewModel is the model the reviewer runs on. Empty means the same one the
+	// task used — honest, and much weaker: a model reviewing its own output
+	// agrees with it. It must support tool calls.
+	ReviewModel string
 	// Shell enables the sandboxed run_command tool. Off by default, and ignored
 	// when bubblewrap will not run.
 	Shell        bool
@@ -70,6 +79,9 @@ func Load() Config {
 	if n, err := strconv.Atoi(get("FANOUT_MAX_PARALLEL")); err == nil && n > 0 {
 		cfg.MaxParallel = n
 	}
+
+	cfg.Review = truthy(get("FANOUT_REVIEW"))
+	cfg.ReviewModel = strings.TrimSpace(get("FANOUT_REVIEW_MODEL"))
 
 	cfg.Shell = truthy(get("FANOUT_SHELL"))
 	cfg.ShellNet = truthy(get("FANOUT_SHELL_NET"))

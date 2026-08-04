@@ -140,6 +140,10 @@ type Loop struct {
 	// sandbox is nil when bubblewrap is unavailable or shell commands are
 	// switched off, which withholds run_command rather than degrading it.
 	sandbox *Sandbox
+	// review sends a settled run to a second agent before it is filed, and
+	// reviewModel names what that agent runs on. See review.go.
+	review      bool
+	reviewModel string
 }
 
 // SetSandbox enables the shell tool. A nil sandbox leaves agents file-only.
@@ -210,7 +214,7 @@ func (l *Loop) startTracked(parent context.Context, taskID string) (<-chan struc
 		l.clearRun(taskID)
 		return nil, err
 	}
-	if err := l.store.SetTaskColumn(taskID, "todo"); err != nil {
+	if err := l.store.SetTaskColumn(taskID, models.ColumnTodo); err != nil {
 		l.clearRun(taskID)
 		return nil, err
 	}
@@ -226,6 +230,12 @@ func (l *Loop) startTracked(parent context.Context, taskID string) (<-chan struc
 		defer close(done)
 		defer l.clearRun(taskID)
 		l.run(ctx, taskID)
+		// In the body rather than deferred, so the task stays registered as
+		// running while it is reviewed: a verdict is still work being done to it,
+		// and starting it again underneath the reviewer would have two agents in
+		// one workspace. A subtask returns from here immediately — its group is
+		// reviewed whole, once the schedule ends.
+		l.reviewAfterRun(ctx, taskID)
 	}()
 	return done, nil
 }
@@ -604,9 +614,19 @@ func (l *Loop) finish(taskID string, step int, summary string) {
 	if summary == "" {
 		summary = fmt.Sprintf("Task completed in %d steps.", step)
 	}
-	if err := l.store.SetTaskFinished(taskID, summary); err != nil {
+	if err := l.settleRun(taskID, summary); err != nil {
 		l.fail(taskID, step, err.Error())
 	}
+}
+
+// settleRun files a run that produced something, in the column the server is
+// configured to send it to. The agent's own sign-off is the same event either
+// way; what review changes is whether it is the last word.
+func (l *Loop) settleRun(taskID, summary string) error {
+	if l.reviewEnabled() {
+		return l.store.SetTaskInReview(taskID, summary)
+	}
+	return l.store.SetTaskFinished(taskID, summary)
 }
 
 // summarizeExchanges renders a batch of calls into the single name and result
@@ -674,7 +694,10 @@ func (l *Loop) concede(taskID string, step int, reason string) {
 		return
 	}
 	l.store.AddTraceStep(taskID, step, "run ended without finish", "", "", "", reason)
-	l.store.SetTaskFinished(taskID, concededSummary(files, step, reason))
+	// A conceded run goes to review like any other. It is the run most likely to
+	// have produced something half-built, which is an argument for checking it
+	// rather than an argument for filing it unchecked.
+	l.settleRun(taskID, concededSummary(files, step, reason))
 }
 
 // concededSummary says plainly that the agent never called finish, so a task
@@ -709,6 +732,12 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 	if task.Description != "" {
 		fmt.Fprintf(&intro, "Details: %s\n", task.Description)
 	}
+	// The agent is told what it will be judged against, in the same words the
+	// reviewer gets. Withholding them would only mean discovering at review time
+	// that the work was aimed somewhere else.
+	if c := criteriaList(task.Criteria); c != "" {
+		fmt.Fprintf(&intro, "\nYour output will be reviewed against these, by an agent that did not watch you work:\n%s\nMeeting them is the goal; anything else you add is beside the point.\n", c)
+	}
 	fmt.Fprintf(&intro, "Workspace directory: %s\n", workspace)
 
 	// Only worth spelling out when the run did not start the workspace empty.
@@ -732,7 +761,21 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 		{Role: "user", Content: intro.String()},
 	}
 
-	return append(msgs, replayTrace(trace)...)
+	return append(msgs, replayTrace(authorSteps(trace))...)
+}
+
+// authorSteps drops the steps a review pass wrote. They are recorded on the task
+// so the verdict is visible where the work is, but replaying them to the author
+// would hand it a critique of its own output as an assistant turn it had made —
+// so the model reads its own name on the findings and argues with them.
+func authorSteps(trace []models.TraceStep) []models.TraceStep {
+	out := make([]models.TraceStep, 0, len(trace))
+	for _, ts := range trace {
+		if !strings.HasPrefix(ts.Action, reviewPrefix) {
+			out = append(out, ts)
+		}
+	}
+	return out
 }
 
 // replayTrace renders the trace under transcriptBudget. It walks backwards, so

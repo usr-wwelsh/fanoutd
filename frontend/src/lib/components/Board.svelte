@@ -6,8 +6,8 @@
 
   const dispatch = createEventDispatcher();
 
-  let columns = ['ideas', 'todo', 'finished'];
-  let columnLabels = { ideas: 'Ideas', todo: 'To-Do', finished: 'Finished' };
+  let columns = ['ideas', 'todo', 'review', 'finished'];
+  let columnLabels = { ideas: 'Ideas', todo: 'To-Do', review: 'Review', finished: 'Finished' };
 
   function getTasks(col) {
     return tasks.filter(t => t.column === col);

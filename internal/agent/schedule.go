@@ -216,6 +216,11 @@ func (l *Loop) StartGroup(groupID string) error {
 		defer l.wg.Done()
 		defer l.clearGroup(groupID)
 		l.runGroup(ctx, plan)
+		// Once the whole schedule has settled, not per subtask: sending one
+		// subtask back would invalidate every sibling that already read its
+		// output, and the claims arbitrate concurrent writes rather than stale
+		// reads.
+		l.reviewGroupAfterRun(ctx, plan)
 	}()
 	return nil
 }

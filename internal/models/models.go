@@ -10,6 +10,16 @@ const (
 	StatusError   = "error"
 )
 
+// The board's columns. ColumnReview holds work an agent has signed off on but
+// nobody has checked; with review switched off nothing is ever filed there, and
+// a run goes from ColumnTodo straight to ColumnFinished as it always did.
+const (
+	ColumnIdeas    = "ideas"
+	ColumnTodo     = "todo"
+	ColumnReview   = "review"
+	ColumnFinished = "finished"
+)
+
 type Task struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
@@ -20,6 +30,16 @@ type Task struct {
 	FinishFlag  bool   `json:"finish_flag"`
 	Status      string `json:"status"`
 	Error       string `json:"error"`
+	// Criteria is what the output must do, one per line, settled before the work
+	// starts. It is what review checks against — a reviewer holding only the goal
+	// is grading the author's own homework, since the only other objective signal
+	// it has is the tests the author wrote. Empty for a task created by hand,
+	// where the goal has to stand in for it.
+	Criteria string `json:"criteria"`
+	// ReviewRound counts how many times this line of work has already been sent
+	// back. It rides on the task rather than on the workspace so that a rework
+	// task carries it forward and the bounce cannot run forever.
+	ReviewRound int `json:"review_round"`
 	// Model overrides the configured default for this task. Empty means default.
 	Model string `json:"model"`
 	// WorkspaceID names the output directory. Several tasks can share one, which

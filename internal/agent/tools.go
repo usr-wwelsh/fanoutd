@@ -23,6 +23,14 @@ const readPageBytes = 6000
 // finishTool is not a workspace operation - the model calls it to end the run.
 const finishTool = "finish"
 
+// passTool and rejectTool end a review pass. They stand where finish stands for
+// an author, and a review that ends without either of them is a review that
+// reached no verdict.
+const (
+	passTool   = "pass"
+	rejectTool = "reject"
+)
+
 // execTool runs a shell command in the workspace. Advertised only when a
 // sandbox exists.
 const execTool = "run_command"
@@ -42,32 +50,39 @@ type ToolCall struct {
 	Summary string `json:"summary"`
 	Offset  int    `json:"offset"`
 	Command string `json:"command"`
+	// Findings carries a review's reasons for sending work back. It is the goal
+	// the rework task is created with, so it is prose for another agent rather
+	// than a note for the operator.
+	Findings string `json:"findings"`
+}
+
+func toolString(desc string) map[string]any {
+	return map[string]any{"type": "string", "description": desc}
+}
+
+func toolDef(name, desc string, props map[string]any, required ...string) openrouter.Tool {
+	if required == nil {
+		required = []string{}
+	}
+	return openrouter.Tool{
+		Type: "function",
+		Function: openrouter.ToolFunction{
+			Name:        name,
+			Description: desc,
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": props,
+				"required":   required,
+			},
+		},
+	}
 }
 
 // ToolDefs advertises the workspace tools to the model in native form.
 // run_command appears only when a sandbox was built, so a host without working
 // bubblewrap never offers the model a tool it will refuse.
 func ToolDefs(sandboxed bool) []openrouter.Tool {
-	str := func(desc string) map[string]any {
-		return map[string]any{"type": "string", "description": desc}
-	}
-	def := func(name, desc string, props map[string]any, required ...string) openrouter.Tool {
-		if required == nil {
-			required = []string{}
-		}
-		return openrouter.Tool{
-			Type: "function",
-			Function: openrouter.ToolFunction{
-				Name:        name,
-				Description: desc,
-				Parameters: map[string]any{
-					"type":       "object",
-					"properties": props,
-					"required":   required,
-				},
-			},
-		}
-	}
+	str, def := toolString, toolDef
 
 	path := str("Path relative to the workspace root.")
 	tools := []openrouter.Tool{
@@ -97,6 +112,50 @@ func ToolDefs(sandboxed bool) []openrouter.Tool {
 			map[string]any{"command": str("Shell command line, e.g. \"go test ./...\" or \"cargo build\".")}, "command"))
 	}
 	return tools
+}
+
+// ReviewToolDefs is the reviewer's half of the same set: everything needed to
+// inspect and execute the work, and nothing that changes it. A reviewer that can
+// edit the workspace stops being a second opinion and becomes a second author.
+func ReviewToolDefs(sandboxed bool) []openrouter.Tool {
+	str, def := toolString, toolDef
+
+	path := str("Path relative to the workspace root.")
+	tools := []openrouter.Tool{
+		def("read_file", fmt.Sprintf("Read a file, up to %d bytes per call. If the result says bytes remain, call again with offset set to continue from there.", readPageBytes),
+			map[string]any{
+				"path":   path,
+				"offset": map[string]any{"type": "integer", "description": "Byte offset to start reading from. Omit or 0 for the start of the file."},
+			}, "path"),
+		def("list_files", "List the files in the workspace under review.",
+			map[string]any{}),
+	}
+	if sandboxed {
+		tools = append(tools, def(execTool,
+			"Run a shell command against the work under review, to build it, test it, or execute it. "+
+				"Runs in an isolated sandbox with no network access. "+
+				"Returns combined stdout and stderr with the exit status.",
+			map[string]any{"command": str("Shell command line, e.g. \"go test ./...\" or \"node index.js\".")}, "command"))
+	}
+	return append(tools,
+		def(passTool, "Accept the work. Call this only once you have checked every criterion and each one holds.",
+			map[string]any{"summary": str("What you checked and how you checked it, criterion by criterion.")}, "summary"),
+		def(rejectTool, "Send the work back. Call this when any criterion does not hold.",
+			map[string]any{"findings": str("What is wrong and how to tell you have fixed it. Written for the agent that will do the rework, naming files and observed behaviour.")}, "findings"),
+	)
+}
+
+// reviewTool reports whether a call is one the reviewer is allowed to make.
+// Advertising a narrower set is not enough on its own: a model that has seen
+// write_file in another life will still emit one, and Workspace.Exec would carry
+// it out. So the verdict on what a reviewer may do is taken here, at the point
+// of execution.
+func reviewTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_file", "list_files", execTool:
+		return true
+	}
+	return false
 }
 
 // mutatingTool reports whether a call changes the workspace itself. Those are

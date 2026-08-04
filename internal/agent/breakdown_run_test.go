@@ -92,9 +92,9 @@ func breakdownLoop(t *testing.T, replies ...string) (*Loop, *store.Store, *fakeB
 
 const goodPlan = `{"contract": "board.js exports mount(el) and reads schema.json for its cells",
  "subtasks": [
-  {"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "reads": []},
-  {"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"]},
-  {"title": "page", "goal": "write the page", "writes": ["index.html"], "reads": ["board.js"], "integration": true}
+  {"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "reads": [], "criteria": ["schema.json parses as JSON"]},
+  {"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"], "criteria": ["mount(el) renders one cell per schema entry"]},
+  {"title": "page", "goal": "write the page", "writes": ["index.html"], "reads": ["board.js"], "integration": true, "criteria": ["index.html opens from file:// with no console errors"]}
 ]}`
 
 // Two subtasks writing board.js: the one failure the retry exists for.

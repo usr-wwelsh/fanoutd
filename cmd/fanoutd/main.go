@@ -63,6 +63,15 @@ func main() {
 	loop := agent.NewLoop(s, client, cfg.OutputDir)
 	loop.SetMaxParallel(cfg.MaxParallel)
 
+	if cfg.Review {
+		loop.SetReview(true, cfg.ReviewModel)
+		if cfg.ReviewModel == "" {
+			log.Println("review enabled on each task's own model — set FANOUT_REVIEW_MODEL to a different one, since a model reviewing its own output agrees with it")
+		} else {
+			log.Printf("review enabled (%s)\n", cfg.ReviewModel)
+		}
+	}
+
 	// A sandbox that cannot be built is not degraded into an unsandboxed shell:
 	// the tool is simply never offered, and agents stay file-only.
 	if cfg.Shell {

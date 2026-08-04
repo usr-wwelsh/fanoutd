@@ -60,6 +60,7 @@ Reply with a single JSON object and nothing else — no prose, no code fences:
    "goal": "a complete, self-contained brief for one agent",
    "writes": ["path/it/creates.ext"],
    "reads": ["path/a/sibling/creates.ext"],
+   "criteria": ["a checkable statement about the finished output"],
    "integration": false}
 ]}
 
@@ -95,12 +96,25 @@ build the same thing — a renderer, a config object, a database handle — say 
 one owns it and that the other receives it. Cover every path that appears in a
 "reads" list, and nothing else.
 
+The criteria are what the finished output is checked against by someone who did
+not write it and cannot ask you anything. Write each one so that a reader with
+the files in front of them can say yes or no without judgement:
+
+  the page opens from file:// and renders the board with no console errors
+  parse("3 4 +") returns 7, and parse("3 +") returns an error rather than panicking
+
+Not "the code is clean", not "it works well", not "handles errors properly" —
+none of those can be checked. Two to four per subtask, about what the output
+does, never about how the agent got there.
+
 Rules:
 - Between 2 and 6 subtasks. Split where the files split. If the idea produces
   two files, a two-way split is the right answer and a five-way split is not.
   Never invent a file to justify another subtask.
 - Every subtask writes at least one file. A subtask that writes nothing produces
   nothing and nothing can depend on it.
+- Every subtask carries at least one criterion, and every criterion is about the
+  files that subtask writes. Do not write criteria for a sibling's output.
 - Paths are relative to the shared directory: "src/board.js". Never "/src/board.js",
   never "./src/board.js", never "..".
 - "reads" holds only paths that another subtask in this plan writes. A subtask
@@ -129,6 +143,10 @@ type Subtask struct {
 	Goal   string   `json:"goal"`
 	Writes []string `json:"writes"`
 	Reads  []string `json:"reads"`
+	// Criteria is what review will hold the subtask's output to. It is settled
+	// here, before the work starts, because a criterion written afterwards is
+	// written by whoever already knows what was built.
+	Criteria []string `json:"criteria"`
 	// Integration marks the subtask that assembles the others. It changes the
 	// brief it is given, not where it runs — the reads it declares already put
 	// it last.
@@ -254,12 +272,26 @@ func parseBreakdown(content string) (*breakdownPlan, error) {
 		}
 		s.Writes = normalizePaths(s.Writes)
 		s.Reads = normalizePaths(s.Reads)
+		s.Criteria = trimAll(s.Criteria)
 		if s.Goal == "" && len(s.Writes) == 0 {
 			continue // an empty object in the array, not a subtask
 		}
 		subs = append(subs, s)
 	}
 	return &breakdownPlan{Contract: strings.TrimSpace(parsed.Contract), Subtasks: subs}, nil
+}
+
+// trimAll tidies a list of free-text lines and drops the empty ones. Criteria
+// are stored newline-separated, so a blank entry would become a blank criterion
+// nobody can check.
+func trimAll(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // normalizePaths renders each path the way a claim will be keyed and drops the
@@ -332,7 +364,27 @@ func validateBreakdown(plan *breakdownPlan) error {
 		return fmt.Errorf("the reads run in a circle, so nothing can go first: %s. One of them must start from files no other subtask writes",
 			strings.Join(quoteAll(titles), ", "))
 	}
-	return validateContract(plan)
+	if err := validateContract(plan); err != nil {
+		return err
+	}
+	// Last, because it is the only fault here that does not stop the plan running.
+	// A partition with two writers on one path is unrunnable whatever its criteria
+	// say, and reporting the criteria first would send the model off to write
+	// checkable statements for a plan it has to redraw anyway.
+	return validateCriteria(subs)
+}
+
+// validateCriteria demands something for the review stage to check against.
+// Without it a reviewer has only the tests the author wrote, and a reviewer that
+// runs the author's tests agrees with the author — an expensive way to file
+// everything as passed.
+func validateCriteria(subs []Subtask) error {
+	for _, s := range subs {
+		if len(s.Criteria) == 0 {
+			return fmt.Errorf("subtask %q has no \"criteria\", so nothing can tell whether its output is finished. Give it two to four statements about the files it writes that a reader can check without asking you", s.Title)
+		}
+	}
+	return nil
 }
 
 // validateContract demands an interface only where two subtasks actually meet.
@@ -452,6 +504,7 @@ func (l *Loop) buildGroup(req BreakdownRequest, plan *breakdownPlan) (*models.Br
 			Title:       sub.Title,
 			Description: subtaskContext(req.Idea, plan.Contract, sub.Integration),
 			Goal:        sub.Goal,
+			Criteria:    strings.Join(sub.Criteria, "\n"),
 			Model:       req.Model,
 			WorkspaceID: workspaceID,
 			GroupID:     groupID,

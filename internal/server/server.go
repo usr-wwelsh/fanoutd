@@ -316,7 +316,14 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-var validColumns = map[string]bool{"ideas": true, "todo": true, "finished": true}
+var validColumns = map[string]bool{
+	models.ColumnIdeas:    true,
+	models.ColumnTodo:     true,
+	models.ColumnReview:   true,
+	models.ColumnFinished: true,
+}
+
+const columnList = "ideas, todo, review, or finished"
 
 func (s *Server) moveTask(w http.ResponseWriter, r *http.Request, id string) {
 	task, err := s.store.GetTask(id)
@@ -338,7 +345,7 @@ func (s *Server) moveTask(w http.ResponseWriter, r *http.Request, id string) {
 	}
 
 	if !validColumns[req.Column] {
-		http.Error(w, "invalid column. must be ideas, todo, or finished", http.StatusBadRequest)
+		http.Error(w, "invalid column. must be "+columnList, http.StatusBadRequest)
 		return
 	}
 
@@ -764,7 +771,7 @@ func (s *Server) moveGroup(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if !validColumns[req.Column] {
-		http.Error(w, "invalid column. must be ideas, todo, or finished", http.StatusBadRequest)
+		http.Error(w, "invalid column. must be "+columnList, http.StatusBadRequest)
 		return
 	}
 
