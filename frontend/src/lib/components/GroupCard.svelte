@@ -1,12 +1,18 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { fetchFiles, fetchGroupPlan, previewUrl, stopGroup } from '../api.js';
+  import { reworkChain, rollupReview } from '../review.js';
   import TaskCard from './TaskCard.svelte';
+  import ReviewBadge from './ReviewBadge.svelte';
 
   // tasks is this column's members of the group, which is usually all of them.
   // A group created before moves were group-wide can still straddle columns, so
   // the header says so rather than reporting a count it is not showing.
-  let { groupId, tasks, selectedId } = $props();
+  //
+  // all is the whole board, and is only used to find the reworks a rejection
+  // opened: they are ordinary tasks outside the group, and without this the plan
+  // they repair says nothing about them.
+  let { groupId, tasks, all = [], selectedId } = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -86,6 +92,13 @@
 
   let doneCount = $derived(tasks.filter(t => t.status === 'done').length);
 
+  // One verdict covers a whole breakdown — the subtasks were split by file, and
+  // whether the idea was achieved is a property of what they add up to — so the
+  // badge is the plan's and not any one subtask's.
+  let review = $derived(rollupReview(tasks));
+  let reworks = $derived(reworkChain(tasks.map(t => t.id), all));
+  let latestRework = $derived(reworks.length ? reworks[reworks.length - 1] : null);
+
   // One segment per wave, so a collapsed plan still shows how far through its
   // schedule it is without expanding to the subtasks.
   let waveState = $derived(
@@ -125,7 +138,11 @@
   }
 </script>
 
-<div class="group" class:running={rollup.cls === 'running'}>
+<div
+  class="group"
+  class:running={rollup.cls === 'running'}
+  class:in-review={review && review.tone === 'judge'}
+>
   <div
     class="group-header"
     role="button"
@@ -159,6 +176,17 @@
       </span>
       <span class="state {rollup.cls}"><span class="mark {rollup.cls}"></span>{rollup.label}</span>
     </div>
+    {#if review}
+      <div class="review-line">
+        <ReviewBadge state={review} />
+        {#if latestRework}
+          <button
+            class="rework-link"
+            onclick={(e) => { e.stopPropagation(); dispatch('selectTask', { taskId: latestRework.id }); }}
+          >rework {latestRework.review_round} →</button>
+        {/if}
+      </div>
+    {/if}
     <div class="group-actions">
       {#if plan?.running}
         <button class="btn tiny" onclick={handleStop}>Stop plan</button>
@@ -198,6 +226,7 @@
         {#each wave.tasks as task (task.id)}
           <TaskCard
             {task}
+            tasks={all}
             isSelected={selectedId === task.id}
             on:select={() => dispatch('selectTask', { taskId: task.id })}
             on:delete={() => dispatch('deleteTask', { taskId: task.id, title: task.title })}
@@ -215,6 +244,27 @@
     border-left: 3px solid var(--rule);
   }
   .group.running { border-left-color: var(--live); }
+  .group.in-review:not(.running) { border-left-color: var(--judge); }
+
+  .review-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .rework-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--judge);
+    cursor: pointer;
+  }
+  .rework-link:hover { text-decoration: underline; }
   .group-header { padding: 10px 12px; cursor: grab; }
   .group-title {
     display: flex;

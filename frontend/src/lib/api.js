@@ -33,6 +33,12 @@ export async function logout() {
   return request('/auth/logout', { method: 'POST' });
 }
 
+// fetchConfig reports the settings that change what the board means: whether a
+// second agent reviews finished work, and what it runs on.
+export async function fetchConfig() {
+  return request('/config');
+}
+
 export async function fetchTasks() {
   return request('/tasks');
 }

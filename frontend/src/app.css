@@ -2,8 +2,11 @@
  *
  * Two rules hold everything together. Authorship is legible from the typeface:
  * the idea a person wrote is the only thing set in a serif, and every path, id
- * and count the machine derived is monospace. And ultramarine means one thing,
- * running, so it appears nowhere else. */
+ * and count the machine derived is monospace. And a colour means one thing:
+ * ultramarine is a run in progress and appears nowhere else, ochre is work held
+ * for a verdict, and rust is a fault. Nothing settled is coloured at all — an
+ * accepted task is ink, which is what makes the three that are worth looking
+ * for findable across a full board. */
 
 :root {
   --f-display: 'Newsreader', Georgia, 'Times New Roman', serif;
@@ -39,6 +42,10 @@
   --on-live:    light-dark(#FFFFFF, #10131F);
   --fault:      light-dark(#9B3A2E, #E28A7C);
   --fault-wash: light-dark(#F3E3E0, #37211D);
+  /* Held for a verdict: not running, not settled, and not a fault either. */
+  --judge:      light-dark(#8A5A12, #E0A94E);
+  --judge-wash: light-dark(#F0E7D3, #2C2415);
+  --on-judge:   light-dark(#FFFFFF, #1A1509);
 
   --scrim: light-dark(rgba(31,35,32,.42), rgba(0,0,0,.62));
   --shadow:
@@ -103,8 +110,10 @@ body {
 }
 
 /* ── status mark ─────────────────────────────────────────────────────── */
-/* One glyph for all five states. Filled is settled, hollow is not, and only
- * running is coloured. */
+/* One glyph for every state a task can be in. Filled is settled, hollow is not,
+ * and the colour is the one from the token block above. The review marks sit
+ * here rather than in a component because a card, a graph node and a plan header
+ * all draw the same glyph and none of them should own it. */
 
 .mark {
   display: inline-block;
@@ -119,8 +128,18 @@ body {
 .mark.error   { background: var(--fault); border-color: var(--fault); }
 .mark.stopped { background: var(--rule); border-color: var(--rule); }
 
+/* Work in front of a reviewer: hollow ochre while the answer is outstanding,
+ * filled once one has been given and acted on. */
+.mark.awaiting { border-color: var(--judge); }
+.mark.judging  { border-color: var(--judge); background: var(--judge); animation: mark-pulse 1.6s ease-in-out infinite; }
+.mark.rejected { border-color: var(--judge); background: var(--judge); }
+.mark.passed   { border-color: var(--ink); background: var(--ink); }
+.mark.stalled  { border-color: var(--fault); background: var(--fault); }
+
 @keyframes mark-pulse { 50% { opacity: .3; } }
-@media (prefers-reduced-motion: reduce) { .mark.running { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .mark.running, .mark.judging { animation: none; }
+}
 
 .state {
   display: inline-flex;
@@ -135,6 +154,38 @@ body {
 .state.running { color: var(--live); }
 .state.error   { color: var(--fault); }
 .state.done    { color: var(--ink-2); }
+
+/* ── review badge ────────────────────────────────────────────────────── */
+/* Where a piece of work stands with a reviewer, in the one shape every surface
+ * draws it in. Ruled rather than filled, because a verdict is a note in the
+ * margin of the work and never the work itself. */
+
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 7px 2px;
+  border: 1px solid var(--rule);
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.verdict.judge { border-color: var(--judge); color: var(--judge); }
+.verdict.fault { border-color: var(--fault); color: var(--fault); background: var(--fault-wash); }
+
+/* The round a piece of work is on, which is only ever worth saying past the
+ * first: everything starts on round zero and nothing says so. */
+.round {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--judge);
+  white-space: nowrap;
+}
 
 /* ── controls ────────────────────────────────────────────────────────── */
 
@@ -219,6 +270,8 @@ input:disabled, textarea:disabled, select:disabled { opacity: .5; }
 }
 .notice.bad { border-left-color: var(--fault); background: var(--fault-wash); color: var(--fault); }
 .notice.bad strong { color: var(--fault); }
+.notice.judge { border-left-color: var(--judge); background: var(--judge-wash); }
+.notice.judge strong { color: var(--judge); }
 
 .modal-backdrop {
   position: fixed;

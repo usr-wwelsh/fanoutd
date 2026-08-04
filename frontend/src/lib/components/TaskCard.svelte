@@ -1,7 +1,12 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { isRework, reviewState } from '../review.js';
+  import ReviewBadge from './ReviewBadge.svelte';
 
-  let { task, isSelected } = $props();
+  // parentOf resolves the work a rework repairs, when the board handed this card
+  // enough tasks to find it. A rework opened by a rejection is otherwise a card
+  // with no visible reason to exist.
+  let { task, isSelected, tasks = [] } = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -14,6 +19,9 @@
   };
 
   let status = $derived(labels[task.status] ? task.status : 'idle');
+  let review = $derived(reviewState(task));
+  let rework = $derived(isRework(task));
+  let parent = $derived(rework ? tasks.find(t => t.id === task.parent_id) : null);
 
   function handleClick() {
     dispatch('select');
@@ -27,6 +35,8 @@
 <div
   class="task-card {status}"
   class:selected={isSelected}
+  class:rework={rework}
+  class:in-review={review && review.tone === 'judge'}
   role="button"
   tabindex="0"
   aria-label={task.title}
@@ -44,10 +54,18 @@
       onclick={(e) => { e.stopPropagation(); dispatch('delete'); }}
     >✕</button>
   </div>
+  {#if rework}
+    <!-- The findings are this task's goal, so the card says what it is repairing
+         instead of repeating them under the title. -->
+    <div class="from">Rework {task.review_round} of {parent ? parent.title : 'reviewed work'}</div>
+  {/if}
   {#if task.goal}
     <div class="task-goal">{task.goal}</div>
   {/if}
-  <div class="state {status}"><span class="mark {status}"></span>{labels[status]}</div>
+  <div class="footer">
+    <div class="state {status}"><span class="mark {status}"></span>{labels[status]}</div>
+    <ReviewBadge state={review} />
+  </div>
 </div>
 
 <style>
@@ -63,6 +81,12 @@
   .task-card.running { border-color: var(--live); box-shadow: inset 3px 0 0 var(--live); }
   .task-card.error { border-color: var(--fault); box-shadow: inset 3px 0 0 var(--fault); }
   .task-card.idle { background: var(--sunk); }
+  /* Held for a verdict. A run in progress still wins the edge, since something
+     is happening to that card and nothing is happening to this one. */
+  .task-card.in-review:not(.running):not(.error) {
+    border-color: var(--judge);
+    box-shadow: inset 3px 0 0 var(--judge);
+  }
 
   .task-title {
     display: flex;
@@ -75,6 +99,25 @@
   }
   .task-title span { flex: 1; min-width: 0; }
   .task-card:hover .x-btn { opacity: 1; }
+
+  .from {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: .06em;
+    color: var(--judge);
+    margin-bottom: 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
 
   .task-goal {
     font-size: 12px;

@@ -7,10 +7,15 @@
   import Login from './lib/components/Login.svelte';
   import { onMount } from 'svelte';
   import { active, toggleTheme } from './lib/theme.svelte.js';
+  import { loadSettings } from './lib/config.svelte.js';
+  import { reviewState } from './lib/review.js';
   import { AuthError, fetchAuthStatus, fetchTasks, logout, moveTask, deleteTask, moveGroup, deleteGroup } from './lib/api.js';
 
   let tasks = $state([]);
   let selectedId = $state(null);
+  // What the detail panel was opened to answer, cleared as soon as something
+  // else is opened. Only a verdict sets it, and only the trace reads it.
+  let focus = $state(null);
   let showNewTask = $state(false);
   let showBreakdown = $state(false);
   let loading = $state(true);
@@ -30,6 +35,10 @@
   }
 
   let running = $derived(tasks.filter(t => t.status === 'running').length);
+  // Work nobody has answered for yet. It is the one count that would otherwise
+  // go unnoticed: nothing is running, nothing has failed, and the board looks
+  // idle while several finished runs wait on a verdict.
+  let held = $derived(tasks.filter(t => reviewState(t)?.tone === 'judge').length);
   let dark = $derived(active() === 'dark');
 
   onMount(() => {
@@ -56,6 +65,9 @@
   function startBoard() {
     stopPolling();
     loading = true;
+    // Settings come from the environment the server started in, so they are
+    // fetched once here rather than with every poll.
+    loadSettings();
     loadTasks();
     poll = setInterval(loadTasks, 2000);
   }
@@ -72,6 +84,7 @@
     authRequired = true;
     authed = false;
     selectedId = null;
+    focus = null;
     showNewTask = false;
     showBreakdown = false;
     error = '';
@@ -105,7 +118,16 @@
     loadTasks();
   }
 
-  function handleSelectTask(taskId) {
+  // Clicking the same card again closes the panel, but a click carrying a
+  // question does not: arriving at a task from its verdict has to open it on the
+  // review, whether or not that task was already the one on screen.
+  function handleSelectTask(taskId, next = null) {
+    if (next) {
+      selectedId = taskId;
+      focus = next;
+      return;
+    }
+    focus = null;
     selectedId = selectedId === taskId ? null : taskId;
   }
 
@@ -184,6 +206,9 @@
       {#if running > 0}
         <span class="state running"><span class="mark running"></span>{running} running</span>
       {/if}
+      {#if held > 0}
+        <span class="held"><span class="mark awaiting"></span>{held} in review</span>
+      {/if}
     </div>
 
     <div class="modes" role="group" aria-label="View">
@@ -217,7 +242,7 @@
     <PlanView
       tasks={tasks}
       selectedId={selectedId}
-      on:selectTask={(e) => handleSelectTask(e.detail.taskId)}
+      on:selectTask={(e) => handleSelectTask(e.detail.taskId, e.detail.focus)}
       on:deleteGroup={(e) => handleDeleteGroup(e.detail)}
       on:refreshed={() => loadTasks()}
     />
@@ -225,7 +250,7 @@
     <Board
       tasks={tasks}
       selectedId={selectedId}
-      on:selectTask={(e) => handleSelectTask(e.detail.taskId)}
+      on:selectTask={(e) => handleSelectTask(e.detail.taskId, e.detail.focus)}
       on:taskMoved={(e) => handleTaskMoved(e.detail)}
       on:deleteTask={(e) => handleDeleteTask(e.detail)}
       on:groupMoved={(e) => handleGroupMoved(e.detail)}
@@ -242,8 +267,10 @@
         <TaskDetail
           task={task}
           tasks={tasks}
+          {focus}
           on:refreshed={() => loadTasks()}
-          on:openTask={(e) => { selectedId = e.detail; loadTasks(); }}
+          on:openTask={(e) => { focus = null; selectedId = e.detail; loadTasks(); }}
+          on:openReview={(e) => { focus = 'review'; selectedId = e.detail; loadTasks(); }}
           on:deleteTask={(e) => handleDeleteTask(e.detail)}
         />
       </div>
@@ -263,7 +290,7 @@
     <BreakdownModal
       on:close={() => showBreakdown = false}
       on:created={() => loadTasks()}
-      on:openTask={(e) => { selectedId = e.detail; loadTasks(); }}
+      on:openTask={(e) => { focus = null; selectedId = e.detail; loadTasks(); }}
     />
   {/if}
 </main>
@@ -291,6 +318,16 @@
     letter-spacing: .16em;
   }
   .brand h1 span { color: var(--ink-3); }
+  .held {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--judge);
+  }
 
   .modes { display: flex; border: 1px solid var(--rule); border-radius: var(--r); overflow: hidden; }
   .mode {

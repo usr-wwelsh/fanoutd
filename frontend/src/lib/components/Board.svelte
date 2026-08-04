@@ -44,6 +44,7 @@
       col={col}
       label={columnLabels[col]}
       tasks={getTasks(col)}
+      all={tasks}
       selectedId={selectedId}
       on:selectTask={onSelectTask}
       on:taskMoved={onTaskMoved}

@@ -2,15 +2,27 @@
   import TaskCard from './TaskCard.svelte';
   import GroupCard from './GroupCard.svelte';
   import { createEventDispatcher } from 'svelte';
+  import { settings } from '../config.svelte.js';
 
-  let { col, label, tasks, selectedId } = $props();
+  // `all` is every task on the board, not just this column's: a rework sits in
+  // To-Do while the work it repairs sits in Review, and the card has to name it.
+  let { col, label, tasks, all = [], selectedId } = $props();
 
   // An empty column should say what to do with it rather than name itself again.
   const prompts = {
     ideas: 'Nothing waiting. New task or Break down an idea starts one here.',
     todo: 'Drop a task here to start its agent.',
+    review: 'A finished run waits here for a second agent to check it against its criteria.',
     finished: 'Finished work lands here on its own.',
   };
+
+  // An empty Review column is two different facts, and the tasks cannot tell
+  // them apart: nothing is waiting, or nothing will ever be filed here.
+  let prompt = $derived(
+    col === 'review' && !settings.review
+      ? 'Review is off, so nothing is filed here. Set FANOUT_REVIEW=1 to have a second agent check finished work.'
+      : prompts[col]
+  );
 
   const dispatch = createEventDispatcher();
 
@@ -83,6 +95,7 @@
         <GroupCard
           groupId={item.groupId}
           tasks={item.tasks}
+          {all}
           {selectedId}
           on:selectTask={(e) => handleSelect(e.detail.taskId)}
           on:deleteTask={(e) => dispatch('deleteTask', e.detail)}
@@ -92,6 +105,7 @@
       {:else}
         <TaskCard
           task={item.task}
+          tasks={all}
           isSelected={selectedId === item.task.id}
           on:select={() => handleSelect(item.task.id)}
           on:delete={() => handleDelete(item.task)}
@@ -99,7 +113,7 @@
       {/if}
     {/each}
     {#if items.length === 0}
-      <div class="empty">{prompts[col]}</div>
+      <div class="empty">{prompt}</div>
     {/if}
   </div>
 </div>
