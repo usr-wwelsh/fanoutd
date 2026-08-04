@@ -1,8 +1,9 @@
 # Roadmap
 
-Steps 1 (portability + auth), 2 (the `fanout` CLI) and 4 (idea breakdown) are
-done; what they shipped is in the README and what they got wrong is in the git
-history. Step 3, repo seeding, is what remains.
+Steps 1 (portability + auth), 2 (the `fanout` CLI), 4 (idea breakdown) and 5
+(criteria + review) are done; what they shipped is in the README and what they
+got wrong is in the git history. Step 3, repo seeding, is what remains, and step
+6 sketches where the two meet.
 
 ---
 
@@ -69,13 +70,41 @@ of the trace.
 
 ---
 
+## Step 6 — The git loop
+
+Not specified yet, and it should not be until review has run against real work —
+its rejection rate on real deliverables is the number that decides whether any of
+this closes. Recorded because it is what steps 3 and 5 are for, and because one
+constraint has to hold from the first line:
+
+**The sandbox has no network, and keeps none.** The agent never holds a
+credential and never reaches a remote. That splits the loop in three:
+
+1. The host clones a repo into the workspace — step 3, with `.git` kept, which
+   is the case that step 3 defers.
+2. The agent works and is reviewed entirely offline, committing in the
+   workspace clone.
+3. A separate host-side step pushes and opens the PR.
+
+The split is also where the human gate goes, and it should stay there for a long
+while. Nothing about a passing review makes an unattended push a good idea.
+
+Per-repo specs are the same artifact as a breakdown's criteria, one level up:
+they are what turns "find something to fix" into a bounded diff against stated
+intent. One repo first.
+
+---
+
 ## Tests
 
 Not a phase — folded into each step as it lands. Coverage is broad: the response
 parser, the CLI end to end, streaming and tool-call fragment reassembly, the
 concede path, shutdown and reclaim, `Workspace.resolve`, claims and scheduling
 under `-race`, the breakdown parser and whole breakdown runs, the group routes,
-the transcript budget, and `nextTitle`.
+the transcript budget, `nextTitle`, criteria validation and its ordering against
+the structural rules, both verdicts, the round limit, the refusal of a write tool
+at the point of execution rather than only in the advertisement, and that a
+review step never reaches the author's own replay.
 
 Nothing on the existing surface is knowingly untested. Step 3 brings its own:
 the clone caps, the refusal to seed once a trace exists, and whatever shape the

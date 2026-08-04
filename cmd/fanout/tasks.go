@@ -77,7 +77,7 @@ func cmdAdd(e *env, args []string) error {
 
 func cmdLs(e *env, args []string) error {
 	fs := e.flags("ls")
-	col := fs.String("col", "", "only this column: ideas, todo, finished")
+	col := fs.String("col", "", "only this column: ideas, todo, review, finished")
 	status := fs.String("status", "", "only this status: idle, running, done, stopped, error")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	plain := fs.Bool("plain", false, "skip the per-task step and file counts (one request instead of many)")
@@ -347,7 +347,7 @@ func cmdStop(e *env, args []string) error {
 func cmdMv(e *env, args []string) error {
 	fs := e.flags("mv")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: fanout mv <id> <ideas|todo|finished>")
+		fmt.Fprintln(fs.Output(), "usage: fanout mv <id> <ideas|todo|review|finished>")
 		fs.PrintDefaults()
 	}
 	id, err := e.resolve(fs, args)

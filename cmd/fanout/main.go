@@ -56,7 +56,7 @@ func commands() []command {
 		{"trace", "step history, truncated unless --full", cmdTrace},
 		{"start", "start or resume the agent loop", cmdStart},
 		{"stop", "cancel the running agent loop", cmdStop},
-		{"mv", "move a task to ideas, todo, or finished", cmdMv},
+		{"mv", "move a task to ideas, todo, review, or finished", cmdMv},
 		{"rm", "delete a task and its workspace", cmdRm},
 		{"files", "list the files a task produced", cmdFiles},
 		{"cat", "print one workspace file", cmdCat},

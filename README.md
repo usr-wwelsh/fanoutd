@@ -21,7 +21,9 @@ runs only when you press **Start Agent**.
 1. **Ideas** — Create tasks with a goal.
 2. **To-Do** — Where a task lands when you start it. The agent plans step by step
    via OpenRouter, writes files into its workspace, and records a full trace.
-3. **Finished** — Where a task lands when the agent reports the goal met, with a
+3. **Review** — Only with `FANOUT_REVIEW=1`. Where a finished run waits for a
+   second agent to check it. Nothing is ever filed here with review off.
+4. **Finished** — Where a task lands when the agent reports the goal met, with a
    summary. Dragging a running task out of To-Do stops it.
 
 Separate from the column, every task has a status: `idle`, `running`, `done`,
@@ -42,8 +44,9 @@ workspace ends in `error`.
 
 `fanout breakdown "<idea>" --start --watch`, or **Break Down** on the board.
 
-One model call turns the idea into subtasks, each with a goal and the paths it
-`writes` and `reads`. Those two lists are the whole design:
+One model call turns the idea into subtasks, each with a goal, the paths it
+`writes` and `reads`, and the `criteria` its output will be held to. Those two
+lists are the whole design:
 
 - **Ownership.** A path has exactly one writer, enforced by a primary key. A
   second subtask that tries to write it gets a tool error naming the owner.
@@ -54,6 +57,10 @@ One model call turns the idea into subtasks, each with a goal and the paths it
 - **The contract.** The same call returns the interface the parts meet at, and it
   goes to every subtask verbatim. The agents never speak to each other, so
   whatever is not settled here is settled N times over.
+- **The criteria.** Two to four checkable statements per subtask about what its
+  output must do, settled before any work starts. The agent is shown them, and
+  review checks against them. A plan whose subtasks carry none is re-planned: a
+  criterion written afterwards is written by whoever already knows what was built.
 
 Subtasks share one workspace, so there is no merge step. A file every subtask
 would need goes to a final integration subtask that owns it, reads its siblings'
@@ -100,6 +107,9 @@ The workspace is `$FANOUT_DATA_DIR/output/<workspace-id>/`.
 | `list_files` | — | List the workspace |
 | `run_command` | `command` | Shell command in the workspace (needs `FANOUT_SHELL=1`) |
 | `finish` | `summary` | End the run |
+
+A reviewer gets `read_file`, `list_files` and `run_command` only, with `pass` and
+`reject` in place of `finish`.
 
 Paths are relative and resolved inside the workspace; `..` escapes are rejected,
 and an absolute path is folded back onto the root — the model is shown its
@@ -164,6 +174,43 @@ agent your ssh keys.
 
 See [.env.example](.env.example) for every knob.
 
+## Review
+
+Off by default. `FANOUT_REVIEW=1` puts a second agent between a run ending and
+its work being filed. It is the same loop with the write tools taken away and
+`finish` replaced by `pass` / `reject`.
+
+What matters is what the reviewer is *not* given. It never sees the author's
+trace — only the goal, the criteria settled before any work started, the author's
+summary as a claim to check, and the files. A reviewer replaying the author's
+reasoning inherits the author's reasons for the shortcuts. Set
+`FANOUT_REVIEW_MODEL` to something other than the author's model too; a model
+reviewing its own output agrees with it.
+
+It is worth much more with `FANOUT_SHELL=1`, since the reviewer can then execute
+what it is judging rather than only read it. Advertising a narrower tool set is
+not enough on its own — a `write_file` from a reviewer is refused at the point of
+execution, not merely left off the menu.
+
+**Pass** files every task it covers as Finished, keeping both the author's
+summary and the verdict. **Reject** leaves the reviewed work in Review and opens
+a *rework* task: same workspace, the findings as its goal, the same criteria, and
+it starts immediately. That happens at most twice — past `maxReviewRounds` the
+work stops going round and is parked with an `error` status, which is what
+`fanout blocked` lists. A review that reaches no verdict changes nothing and
+parks the same way.
+
+Solo tasks are reviewed one at a time. **A breakdown is reviewed whole**, once
+its whole schedule has settled and only if every subtask finished: sending one
+subtask back would invalidate every sibling that already read its output, and the
+claims arbitrate concurrent writes rather than stale reads. Its rework task gets
+the shared workspace but no group, so it is free to fix whichever file the
+findings name.
+
+Verdicts are recorded on the task's own trace, and skipped when that task's
+transcript is replayed — an author handed a critique of itself as a turn it made
+will argue with it.
+
 ## Setup
 
 ```bash
@@ -204,6 +251,8 @@ is a separate ~6 MB binary that belongs on whatever machine you type from.
 | `DATABASE_PATH` | `fanoutd.db` | Relative to the data directory |
 | `OUTPUT_DIR` | `output` | Relative to the data directory |
 | `FANOUT_SHELL` | `0` | Enable `run_command`; the rest of the shell knobs are in `.env.example` |
+| `FANOUT_REVIEW` | `0` | Send finished runs to a reviewing agent before Finished |
+| `FANOUT_REVIEW_MODEL` | *(the task's own)* | Model the reviewer runs on; pick a different one |
 | `FANOUT_ENV_FILE` | *(below)* | Override the settings file location |
 | `OPENROUTER_BASE_URL` | OpenRouter | Override the API base URL (testing) |
 
@@ -294,8 +343,8 @@ acebc62  test (2)                 -              interrupted by a server restart
 ```
 
 `--resume` starts every task listed from its existing trace and does not stop at
-the first one the server refuses. The default scope is To-Do; Ideas and Finished
-need `--all`.
+the first one the server refuses. The default scope is To-Do and Review — the two
+columns where something is waiting on you — and Ideas and Finished need `--all`.
 
 **Id prefixes.** Any unambiguous prefix works, and so does part of a title —
 `fanout show c762`, `fanout show Tetris`. Ambiguity is an error listing the

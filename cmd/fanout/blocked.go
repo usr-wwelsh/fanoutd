@@ -107,17 +107,19 @@ type blockedRow struct {
 // workspace had files in it, and either way the run is over before the goal was
 // met and resuming picks up from the existing trace.
 //
-// Column is the filter that matters. A conceded run is filed under finished as
-// done, so anything still sitting in todo stopped for a reason nobody has dealt
-// with — which is exactly the set worth resuming. Ideas and finished are where
-// a task lands once someone has looked at it, so they need --all.
+// Column is the filter that matters. A conceded run is filed as done, so
+// anything still sitting in todo stopped for a reason nobody has dealt with —
+// which is exactly the set worth resuming. Review is the other half of that set:
+// work sent back too many times, or a verdict that never arrived, is parked
+// there with an error and is waiting on a person by design. Ideas and finished
+// are where a task lands once someone has looked at it, so they need --all.
 func blockedTasks(tasks []models.Task, all bool) []models.Task {
 	out := make([]models.Task, 0, 4)
 	for _, t := range tasks {
 		if t.Status != models.StatusStopped && t.Status != models.StatusError {
 			continue
 		}
-		if !all && t.Column != "todo" {
+		if !all && t.Column != models.ColumnTodo && t.Column != models.ColumnReview {
 			continue
 		}
 		out = append(out, t)
