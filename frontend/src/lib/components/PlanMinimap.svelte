@@ -177,11 +177,13 @@
   .blk.head { background: var(--rule); }
   .blk.running { background: var(--live); opacity: .55; }
   .blk.error { background: var(--fault); opacity: .55; }
+  .blk.review { background: var(--judge); opacity: .55; }
 
   .rail.lit .blk { background: var(--ink-3); opacity: 1; transition-duration: .1s; }
   .rail.lit .blk.head { background: var(--ink-2); }
   .rail.lit .blk.running { background: var(--live); }
   .rail.lit .blk.error { background: var(--fault); }
+  .rail.lit .blk.review { background: var(--judge); }
 
   .window {
     position: absolute;
