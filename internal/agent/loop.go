@@ -156,6 +156,15 @@ func (l *Loop) SetSandbox(sb *Sandbox) {
 	l.mu.Unlock()
 }
 
+// Sandboxed reports whether agents actually have a shell, which is not the same
+// question as whether one was asked for: a sandbox that would not start leaves
+// the tool unoffered and the setting on.
+func (l *Loop) Sandboxed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sandbox != nil
+}
+
 func NewLoop(s *store.Store, c *openrouter.Client, outputDir string) *Loop {
 	return &Loop{
 		store:       s,

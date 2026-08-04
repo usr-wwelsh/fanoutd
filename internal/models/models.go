@@ -20,6 +20,13 @@ const (
 	ColumnFinished = "finished"
 )
 
+// What a review made of a run. An empty verdict is the third case and the one
+// the review column exists for: nobody has answered for this work yet.
+const (
+	VerdictPassed   = "passed"
+	VerdictRejected = "rejected"
+)
+
 type Task struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
@@ -40,6 +47,17 @@ type Task struct {
 	// back. It rides on the task rather than on the workspace so that a rework
 	// task carries it forward and the bounce cannot run forever.
 	ReviewRound int `json:"review_round"`
+	// Verdict is what a review made of this run: passed, rejected, or empty for
+	// work no reviewer has answered for. It duplicates a line the same verdict
+	// appended to Summary, and earns that: a board colours several hundred cards
+	// per poll and cannot read prose to find out which of them were accepted,
+	// while the summary has to stay readable on its own for the CLI and for
+	// anyone reading the row a year later.
+	Verdict string `json:"verdict"`
+	// VerdictNote is what the reviewer said — its findings when it sent the work
+	// back, and what it checked when it passed it. It is the one part of a review
+	// that has to be read rather than counted.
+	VerdictNote string `json:"verdict_note"`
 	// Model overrides the configured default for this task. Empty means default.
 	Model string `json:"model"`
 	// WorkspaceID names the output directory. Several tasks can share one, which

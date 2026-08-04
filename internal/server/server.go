@@ -49,6 +49,7 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/auth/", s.handleAuthRoute)
+	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/tasks", s.handleTasksList)
 	mux.HandleFunc("/api/tasks/", s.handleTaskRoute)
@@ -103,6 +104,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleConfig reports the settings that change what the board means rather
+// than how it looks. An empty review column is two different facts — nothing is
+// waiting, or nothing will ever be filed there — and the UI cannot tell them
+// apart from the tasks alone. Gated like the rest of the API: it names the model
+// the operator is paying for.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"review": s.cfg.Review,
+		// Empty means the reviewer runs on whatever each task used, which is the
+		// weak setting and is worth saying out loud where it is switched on.
+		"review_model": s.cfg.ReviewModel,
+		// From the loop rather than the config, so a sandbox that would not start
+		// reads as off here too. A reviewer with a shell can run what it is
+		// judging, which is the difference between checking work and reading it.
+		"shell": s.loop.Sandboxed(),
+	})
 }
 
 func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +204,11 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		Goal        string `json:"goal"`
 		Model       string `json:"model"`
+		// Criteria is what review will hold the output to, one per line. A
+		// breakdown writes these itself; a task made by hand gets them only if
+		// whoever made it says what "done" means, and is judged on its goal alone
+		// otherwise.
+		Criteria string `json:"criteria"`
 		// Seed is material to place in the new workspace before the task runs.
 		Seed []models.SeedFile `json:"seed"`
 	}
@@ -201,7 +226,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	task, err := s.store.CreateTask(req.Title, req.Description, req.Goal, req.Model)
+	task, err := s.store.CreateTaskFrom(store.NewTask{
+		Title:       req.Title,
+		Description: req.Description,
+		Goal:        req.Goal,
+		Criteria:    strings.TrimSpace(req.Criteria),
+		Model:       req.Model,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -246,6 +277,9 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request, id string) {
 		// Model is a pointer because "" is a real value here - it means fall
 		// back to the configured default.
 		Model *string `json:"model"`
+		// Criteria is a pointer for the same reason: clearing them is a choice,
+		// and it means the next review holds the work to the goal alone.
+		Criteria *string `json:"criteria"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -267,6 +301,12 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request, id string) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if req.Criteria != nil {
+		if err := s.store.SetTaskCriteria(task.ID, strings.TrimSpace(*req.Criteria)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	updated, _ := s.store.GetTask(id)
 	w.Header().Set("Content-Type", "application/json")

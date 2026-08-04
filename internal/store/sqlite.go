@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const taskCols = `id, title, description, goal, criteria, review_round, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, created_at, updated_at`
+const taskCols = `id, title, description, goal, criteria, review_round, verdict, verdict_note, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, created_at, updated_at`
 
 type Store struct {
 	db *sql.DB
@@ -55,6 +55,8 @@ func initSchema(db *sql.DB) error {
 		goal TEXT NOT NULL DEFAULT '',
 		criteria TEXT NOT NULL DEFAULT '',
 		review_round INTEGER NOT NULL DEFAULT 0,
+		verdict TEXT NOT NULL DEFAULT '',
+		verdict_note TEXT NOT NULL DEFAULT '',
 		column TEXT NOT NULL DEFAULT 'ideas',
 		summary TEXT NOT NULL DEFAULT '',
 		finish_flag INTEGER NOT NULL DEFAULT 0,
@@ -116,6 +118,8 @@ func initSchema(db *sql.DB) error {
 		{"tasks", "group_id", "TEXT NOT NULL DEFAULT ''"},
 		{"tasks", "criteria", "TEXT NOT NULL DEFAULT ''"},
 		{"tasks", "review_round", "INTEGER NOT NULL DEFAULT 0"},
+		{"tasks", "verdict", "TEXT NOT NULL DEFAULT ''"},
+		{"tasks", "verdict_note", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_name", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_result", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "calls", "TEXT NOT NULL DEFAULT ''"},
@@ -196,8 +200,8 @@ func (s *Store) CreateTaskFrom(nt NewTask) (*models.Task, error) {
 	}
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, nt.Title, nt.Description, nt.Goal, nt.Criteria, nt.ReviewRound,
+		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, nt.Title, nt.Description, nt.Goal, nt.Criteria, nt.ReviewRound, "", "",
 		"ideas", "", false, models.StatusIdle, "",
 		nt.Model, workspaceID, nt.ParentID, nt.GroupID, now, now,
 	)
@@ -220,8 +224,8 @@ func (s *Store) GetTask(id string) (*models.Task, error) {
 // scanTask keeps the column order in one place, since taskCols is shared.
 func scanTask(scan func(...any) error, t *models.Task) error {
 	return scan(&t.ID, &t.Title, &t.Description, &t.Goal, &t.Criteria, &t.ReviewRound,
-		&t.Column, &t.Summary, &t.FinishFlag, &t.Status, &t.Error, &t.Model,
-		&t.WorkspaceID, &t.ParentID, &t.GroupID, &t.CreatedAt, &t.UpdatedAt)
+		&t.Verdict, &t.VerdictNote, &t.Column, &t.Summary, &t.FinishFlag, &t.Status,
+		&t.Error, &t.Model, &t.WorkspaceID, &t.ParentID, &t.GroupID, &t.CreatedAt, &t.UpdatedAt)
 }
 
 func (s *Store) ListTasks() ([]models.Task, error) {
@@ -386,11 +390,39 @@ func (s *Store) ClearFinishFlag(id string) error {
 // loop reads as a stop signal, and done status. Only the column differs between
 // the two ways that can happen, and separating them is what lets "the agent
 // stopped" and "the work was accepted" stop being the same event.
+//
+// It clears any verdict, because a run that has just settled is a fresh claim
+// about the work and no reviewer has answered this one. Every verdict on the
+// board therefore refers to the output that is there now, rather than to a
+// version two reworks ago.
 func (s *Store) settle(id, column, summary string) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		"UPDATE tasks SET column=?, summary=?, finish_flag=?, status=?, error='', updated_at=? WHERE id=?",
+		"UPDATE tasks SET column=?, summary=?, finish_flag=?, status=?, error='', verdict='', verdict_note='', updated_at=? WHERE id=?",
 		column, summary, true, models.StatusDone, now, id,
+	)
+	return err
+}
+
+// SetTaskVerdict records what a review made of a run. It is written after the
+// summary rather than with it because the two settle paths differ — a pass files
+// the task, a rejection leaves it where it is — and only this part is common to
+// both.
+func (s *Store) SetTaskVerdict(id, verdict, note string) error {
+	_, err := s.db.Exec(
+		"UPDATE tasks SET verdict=?, verdict_note=?, updated_at=? WHERE id=?",
+		verdict, note, time.Now().UTC(), id,
+	)
+	return err
+}
+
+// SetTaskCriteria replaces what a task's output will be held to. Editing them
+// after a run has been judged does not re-judge it; the verdict on the row is
+// still the answer to the criteria that were in force when it was reached.
+func (s *Store) SetTaskCriteria(id, criteria string) error {
+	_, err := s.db.Exec(
+		"UPDATE tasks SET criteria=?, updated_at=? WHERE id=?",
+		criteria, time.Now().UTC(), id,
 	)
 	return err
 }

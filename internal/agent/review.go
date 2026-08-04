@@ -574,7 +574,9 @@ func (l *Loop) settleReview(ctx context.Context, t reviewTarget, step int, verdi
 		for _, task := range t.covers {
 			if err := l.store.SetTaskFinished(task.ID, appendVerdict(task.Summary, "Review passed", note)); err != nil {
 				log.Printf("review passed task %s but could not file it: %v\n", shortID(task.ID), err)
+				continue
 			}
+			l.store.SetTaskVerdict(task.ID, models.VerdictPassed, note)
 		}
 		return
 	}
@@ -586,7 +588,9 @@ func (l *Loop) settleReview(ctx context.Context, t reviewTarget, step int, verdi
 	for _, task := range t.covers {
 		if err := l.store.SetTaskSummary(task.ID, appendVerdict(task.Summary, "Review rejected", note)); err != nil {
 			log.Printf("review rejected task %s but could not record it: %v\n", shortID(task.ID), err)
+			continue
 		}
+		l.store.SetTaskVerdict(task.ID, models.VerdictRejected, note)
 	}
 
 	// The bound. Past it the work stops going round and waits for somebody, which
