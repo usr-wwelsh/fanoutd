@@ -2,13 +2,18 @@
   import TraceView from './TraceView.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import ContinueModal from './ContinueModal.svelte';
+  import ReviewBadge from './ReviewBadge.svelte';
   import { createEventDispatcher } from 'svelte';
   import {
-    moveTask, startAgent, stopAgent, fetchFiles, updateTask,
+    moveTask, startAgent, stopAgent, fetchFiles, fetchGroupPlan, updateTask,
     retryTask, rawFileUrl, previewUrl, fileUrl,
   } from '../api.js';
+  import { criteriaLines, isRework, reviewState } from '../review.js';
+  import { settings } from '../config.svelte.js';
 
-  let { task, tasks = [] } = $props();
+  // focus is what the panel was opened to answer. Only the trace acts on it, by
+  // opening on the reviewer's half when a verdict is what was clicked.
+  let { task, tasks = [], focus = null } = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -35,6 +40,44 @@
     stopped: 'Stopped',
     error: 'Failed',
   };
+
+  // Done in the review column is not finished, and saying so was the whole point
+  // of splitting the two: the agent stopped, and whether the work is any good is
+  // the question that has not been answered yet.
+  let statusLabel = $derived(
+    task.column === 'review' && task.status === 'done'
+      ? 'Run finished, not yet judged'
+      : task.column === 'review' && task.status === 'running'
+        ? 'Being reviewed'
+        : statusLabels[task.status] ?? task.status
+  );
+
+  let review = $derived(reviewState(task));
+  let criteria = $derived(criteriaLines(task.criteria));
+  let rework = $derived(isRework(task));
+  let reworks = $derived(tasks.filter(t => t.parent_id === task.id && isRework(t)));
+
+  // A breakdown is judged whole, and one verdict is recorded against the subtask
+  // that ran last — so the reviewer's trace is on a sibling and every other
+  // subtask has to say where. Resolved from the plan rather than guessed, and
+  // only for a task that belongs to one.
+  let anchorId = $state('');
+  $effect(() => {
+    const groupId = task.group_id;
+    anchorId = '';
+    if (!groupId) return;
+    let cancelled = false;
+    fetchGroupPlan(groupId)
+      .then(plan => {
+        const last = plan.waves?.[plan.waves.length - 1] ?? [];
+        if (!cancelled) anchorId = last[last.length - 1] ?? '';
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  });
+  let anchor = $derived(
+    anchorId && anchorId !== task.id ? tasks.find(t => t.id === anchorId) : null
+  );
 
   $effect(() => {
     const id = task.id;
@@ -115,15 +158,57 @@
     </div>
   {/if}
 
+  <!-- What the output is held to, settled before the work started and shown to
+       the agent and the reviewer in these same words. Worth showing even with
+       review off: they are the only checkable statement of what "done" means. -->
+  {#if criteria.length}
+    <div class="block">
+      <h3 class="eyebrow">Acceptance criteria · {criteria.length}</h3>
+      <ul class="criteria">
+        {#each criteria as line, i (i)}
+          <li>{line}</li>
+        {/each}
+      </ul>
+    </div>
+  {:else if settings.review}
+    <div class="block">
+      <h3 class="eyebrow">Acceptance criteria</h3>
+      <p class="none">None recorded, so a review holds this to its goal and to nothing more. A breakdown writes them itself.</p>
+    </div>
+  {/if}
+
   <div class="status-line {task.status}">
     <span class="mark {task.status}"></span>
-    <span>{statusLabels[task.status] ?? task.status}</span>
+    <span>{statusLabel}</span>
   </div>
 
   {#if parent}
     <div class="lineage">
-      {task.workspace_id === parent.workspace_id ? 'Continues' : 'Retry of'}
+      {rework ? `Rework ${task.review_round} of` : task.workspace_id === parent.workspace_id ? 'Continues' : 'Retry of'}
       <button class="link" onclick={() => dispatch('openTask', parent.id)}>{parent.title}</button>
+    </div>
+  {/if}
+  {#if reworks.length}
+    <div class="lineage">
+      Sent back, and repaired by
+      {#each reworks as r (r.id)}
+        <button class="link" onclick={() => dispatch('openTask', r.id)}>{r.title}</button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if review}
+    <div class="notice {review.tone === 'done' ? '' : review.tone === 'fault' ? 'bad' : 'judge'} verdict-block">
+      <div class="verdict-head">
+        <ReviewBadge state={review} title={false} />
+        {#if task.review_round > 0}<span class="round">round {task.review_round}</span>{/if}
+      </div>
+      <p class="verdict-note">{task.verdict_note || review.hint}</p>
+      {#if anchor}
+        <button class="link" onclick={() => dispatch('openReview', anchor.id)}>
+          The reviewer's steps are on {anchor.title}
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -209,7 +294,7 @@
     {/if}
   </div>
 
-  <TraceView taskId={task.id} live={running} />
+  <TraceView taskId={task.id} live={running} {focus} />
 </div>
 
 {#if showContinue}
@@ -247,6 +332,27 @@
   .block p { margin: 0; }
   .goal-text { font-size: 15px; line-height: 1.4; }
   .summary-text { font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+  .none { font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+
+  .criteria { margin: 0; padding-left: 16px; }
+  .criteria li {
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    margin-bottom: 3px;
+  }
+  .criteria li::marker { color: var(--ink-3); }
+
+  .verdict-block { margin-bottom: 14px; }
+  .verdict-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .verdict-note {
+    margin: 7px 0 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+  }
+  .verdict-block .link { margin: 8px 0 0; display: inline-block; }
 
   .status-line {
     display: flex;
