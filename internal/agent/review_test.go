@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fanoutd/internal/models"
 	"fanoutd/internal/openrouter"
@@ -27,6 +28,18 @@ type fakeReviewer struct {
 
 	mu    sync.Mutex
 	calls []reviewCall
+	// briefs holds the opening prompt of every review pass, which is what a test
+	// about what a reviewer was told has to look at.
+	briefs []string
+}
+
+func (f *fakeReviewer) lastBrief() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.briefs) == 0 {
+		return ""
+	}
+	return f.briefs[len(f.briefs)-1]
 }
 
 // reviewCall is one tool call the reviewer should make. Anything other than pass
@@ -50,6 +63,7 @@ func (f *fakeReviewer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(f.calls) > 0 {
 		call, f.calls = f.calls[0], f.calls[1:]
 	}
+	f.briefs = append(f.briefs, reviewBrief(body))
 	f.mu.Unlock()
 
 	args, _ := json.Marshal(call.args)
@@ -79,9 +93,33 @@ func isReviewRequest(body []byte) bool {
 		strings.Contains(req.Messages[0].Content, "You are reviewing work produced by another agent")
 }
 
+// reviewBrief is the user turn a review pass opens with: the goal, the criteria
+// and the file listing the reviewer was handed.
+func reviewBrief(body []byte) string {
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) < 2 {
+		return ""
+	}
+	return req.Messages[1].Content
+}
+
 func reviewLoop(t *testing.T, calls ...reviewCall) (*Loop, *store.Store) {
 	t.Helper()
-	srv := httptest.NewServer(&fakeReviewer{author: &fakeModel{}, calls: calls})
+	l, s, _ := reviewLoopWithModel(t, calls...)
+	return l, s
+}
+
+// reviewLoopWithModel is reviewLoop for a test that also has to ask what the
+// reviewer was told.
+func reviewLoopWithModel(t *testing.T, calls ...reviewCall) (*Loop, *store.Store, *fakeReviewer) {
+	t.Helper()
+	f := &fakeReviewer{author: &fakeModel{}, calls: calls}
+	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 
 	dir := t.TempDir()
@@ -93,7 +131,7 @@ func reviewLoop(t *testing.T, calls ...reviewCall) (*Loop, *store.Store) {
 	l := NewLoop(s, client, filepath.Join(dir, "output"))
 	l.SetReview(true, "")
 	stopEverything(t, l)
-	return l, s
+	return l, s, f
 }
 
 // awaiting creates a task in the state a finished run leaves behind: parked in
@@ -173,6 +211,196 @@ func TestReviewRejectionOpensAReworkTask(t *testing.T) {
 	if rework.ReviewRound != 1 {
 		t.Errorf("rework round = %d, want 1", rework.ReviewRound)
 	}
+}
+
+// A rework exists because a review rejected something, and that something is
+// still parked in the review column. Nothing else ever looks at it again, so a
+// rework that passes has to file the work it repaired along with itself.
+func TestReworkVerdictFilesTheWorkItRepaired(t *testing.T) {
+	l, s, f := reviewLoopWithModel(t, reviewCall{passTool, map[string]string{"summary": "the href resolves now"}})
+	original := awaiting(t, s, store.NewTask{
+		Title: "Index Page", Goal: "build the page", Criteria: "the stylesheet loads",
+	}, "wrote index.html")
+	rework := awaiting(t, s, store.NewTask{
+		Title:       "Index Page — rework 1",
+		Goal:        `href="src/styles.css" resolves to src/src/styles.css`,
+		Criteria:    original.Criteria,
+		ReviewRound: 1,
+		ParentID:    original.ID,
+		WorkspaceID: original.WorkspaceID,
+	}, "fixed the href")
+
+	l.reviewAfterRun(context.Background(), rework.ID)
+
+	for _, id := range []string{rework.ID, original.ID} {
+		got, _ := s.GetTask(id)
+		if got.Column != models.ColumnFinished {
+			t.Errorf("task %q column = %q, want %q", got.Title, got.Column, models.ColumnFinished)
+		}
+	}
+	// Held to what the work was for, not to the wording of the fault it repairs.
+	// Otherwise a rework passes having fixed the one line named and broken
+	// everything around it.
+	if brief := f.lastBrief(); !strings.Contains(brief, "build the page") {
+		t.Errorf("the reviewer was given %q, want the original goal", brief)
+	}
+}
+
+// A rejected subtask's whole group waits in the review column, since a breakdown
+// is judged as one thing. The rework's verdict is the one that releases them.
+func TestReworkVerdictFilesTheGroupItRepaired(t *testing.T) {
+	l, s := reviewLoop(t, reviewCall{passTool, map[string]string{"summary": "the pieces fit"}})
+	_, workspace, byTitle := makeGroup(t, s, []struct {
+		title  string
+		writes []string
+		reads  []string
+	}{
+		{"first", []string{"a.md"}, nil},
+		{"second", []string{"b.md"}, []string{"a.md"}},
+	})
+	for _, id := range byTitle {
+		if err := s.SetTaskInReview(id, "wrote my part"); err != nil {
+			t.Fatalf("SetTaskInReview: %v", err)
+		}
+	}
+	rework := awaiting(t, s, store.NewTask{
+		Title:       "second — rework 1",
+		Goal:        "b.md contradicts a.md",
+		ReviewRound: 1,
+		ParentID:    byTitle["second"],
+		WorkspaceID: workspace,
+	}, "reconciled the two")
+
+	l.reviewAfterRun(context.Background(), rework.ID)
+
+	for title, id := range byTitle {
+		got, _ := s.GetTask(id)
+		if got.Column != models.ColumnFinished {
+			t.Errorf("subtask %q column = %q, want the rework's verdict to file the whole group", title, got.Column)
+		}
+	}
+	if got, _ := s.GetTask(rework.ID); got.Column != models.ColumnFinished {
+		t.Errorf("rework column = %q, want %q", got.Column, models.ColumnFinished)
+	}
+}
+
+// The round limit ends the chain, and it has to end it for everything the chain
+// was about — work left filed as done in the review column is work no listing
+// shows and nobody is asked about.
+func TestReworkAtTheRoundLimitBlocksWhatItCovers(t *testing.T) {
+	l, s := reviewLoop(t, reviewCall{rejectTool, map[string]string{"findings": "still broken"}})
+	original := awaiting(t, s, store.NewTask{Title: "Index Page"}, "wrote index.html")
+	rework := awaiting(t, s, store.NewTask{
+		Title:       "Index Page — rework 2",
+		ReviewRound: maxReviewRounds,
+		ParentID:    original.ID,
+		WorkspaceID: original.WorkspaceID,
+	}, "tried again")
+
+	l.reviewAfterRun(context.Background(), rework.ID)
+
+	for _, id := range []string{rework.ID, original.ID} {
+		got, _ := s.GetTask(id)
+		if got.Status != models.StatusError {
+			t.Errorf("task %q status = %q, want %q so `fanout blocked` lists it", got.Title, got.Status, models.StatusError)
+		}
+	}
+}
+
+// A verdict is delivered by the goroutine that ran the task, so a process that
+// goes away between a run settling and its review finishing leaves work parked
+// with nothing left that would ever look at it again.
+func TestReviewParkedSweepsWorkLeftBehind(t *testing.T) {
+	l, s := reviewLoop(t, reviewCall{passTool, map[string]string{"summary": "checked it"}})
+	task := awaiting(t, s, store.NewTask{Criteria: "it builds"}, "wrote main.go")
+
+	if n := l.ReviewParked(context.Background()); n != 1 {
+		t.Fatalf("ReviewParked queued %d verdict(s), want 1", n)
+	}
+	waitForColumn(t, s, task.ID, models.ColumnFinished)
+}
+
+// The sweep answers per verdict, not per task: a breakdown is one call, and a
+// rejected task with a rework under it is covered by the rework's.
+func TestParkedTargetsCollapseToOneVerdictEach(t *testing.T) {
+	l, s := reviewLoop(t)
+	_, _, byTitle := makeGroup(t, s, []struct {
+		title  string
+		writes []string
+		reads  []string
+	}{
+		{"first", []string{"a.md"}, nil},
+		{"second", []string{"b.md"}, []string{"a.md"}},
+	})
+	for _, id := range byTitle {
+		if err := s.SetTaskInReview(id, "wrote my part"); err != nil {
+			t.Fatalf("SetTaskInReview: %v", err)
+		}
+	}
+	solo := awaiting(t, s, store.NewTask{Title: "solo"}, "wrote it")
+	rework := awaiting(t, s, store.NewTask{
+		Title: "solo — rework 1", ReviewRound: 1, ParentID: solo.ID, WorkspaceID: solo.WorkspaceID,
+	}, "fixed it")
+
+	targets, err := l.parkedTargets()
+	if err != nil {
+		t.Fatalf("parkedTargets: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("parkedTargets returned %d target(s), want one per verdict owed", len(targets))
+	}
+
+	covered := map[string]int{}
+	for _, target := range targets {
+		for _, task := range target.covers {
+			covered[task.ID]++
+		}
+	}
+	for _, id := range []string{solo.ID, rework.ID, byTitle["first"], byTitle["second"]} {
+		if covered[id] != 1 {
+			t.Errorf("task %s covered by %d verdicts, want exactly 1", shortID(id), covered[id])
+		}
+	}
+}
+
+// A task the server has since started is not parked any more, and the run that
+// started it will review it when it ends. Two agents in one workspace is the
+// thing the claim prevents.
+func TestReviewParkedSkipsATaskAlreadyBusy(t *testing.T) {
+	l, s := reviewLoop(t, reviewCall{passTool, map[string]string{"summary": "checked it"}})
+	task := awaiting(t, s, store.NewTask{}, "wrote main.go")
+
+	if _, ok := l.claimRun(context.Background(), task.ID); !ok {
+		t.Fatal("could not claim the task")
+	}
+	defer l.clearRun(task.ID)
+
+	l.ReviewParked(context.Background())
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got, _ := s.GetTask(task.ID); got.Column != models.ColumnReview {
+			t.Fatalf("column = %q, want the busy task left alone", got.Column)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForColumn(t *testing.T, s *store.Store, taskID, column string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := s.GetTask(taskID)
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if got.Column == column {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	got, _ := s.GetTask(taskID)
+	t.Fatalf("column = %q, want %q", got.Column, column)
 }
 
 // The bound. Without it a task the model cannot fix bounces between todo and

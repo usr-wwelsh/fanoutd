@@ -138,13 +138,79 @@ func (l *Loop) reviewAfterRun(ctx context.Context, taskID string) {
 	if !awaitingReview(*task) {
 		return
 	}
-	l.runReview(ctx, reviewTarget{
-		anchor:   *task,
-		covers:   []models.Task{*task},
+	l.runReview(ctx, l.soloTarget(*task))
+}
+
+// soloTarget is what one verdict on a solo run covers. Usually that is the task
+// and nothing else.
+//
+// A rework is the exception, and the reason this is not a literal. It exists
+// because a review rejected something, and that something is still parked in the
+// review column — along with its whole group, if it was a subtask — waiting for
+// a verdict that only this pass will ever produce. Nothing else looks at those
+// rows again: the rejection recorded its findings and moved on, and a task filed
+// as done in the review column is not what `fanout blocked` lists. So a rework
+// that passes files the work it repaired, and a rework that is rejected again
+// carries it round with it.
+//
+// The chain is walked rather than the parent alone, since round two reworks a
+// rework, and it is walked only through ancestors still awaiting a verdict:
+// anything already filed, faulted, or moved by hand has had its answer and is
+// not this pass's to overwrite.
+func (l *Loop) soloTarget(task models.Task) reviewTarget {
+	t := reviewTarget{
+		anchor:   task,
+		covers:   []models.Task{task},
 		goal:     task.Goal,
 		criteria: task.Criteria,
 		summary:  task.Summary,
-	})
+	}
+
+	seen := map[string]bool{task.ID: true}
+	// One hop per round, plus the original. A cycle cannot outlast the bound
+	// even if a parent link is ever written the other way round.
+	for id, hops := task.ParentID, 0; id != "" && hops <= maxReviewRounds; hops++ {
+		parent, err := l.store.GetTask(id)
+		if err != nil || parent == nil || seen[parent.ID] || !awaitingReview(*parent) {
+			break
+		}
+		seen[parent.ID] = true
+		t.covers = append(t.covers, *parent)
+		// The goal the reviewer is given is the one the work was originally for,
+		// not the findings this rework was opened with. Holding a repair to the
+		// wording of the fault it repairs is how a rework passes review having
+		// fixed the one line named and broken everything around it.
+		t.goal = originGoal(*parent)
+
+		if parent.GroupID != "" {
+			siblings, err := l.store.TasksInGroup(parent.GroupID)
+			if err != nil {
+				break
+			}
+			for _, sib := range siblings {
+				if seen[sib.ID] || !awaitingReview(sib) {
+					continue
+				}
+				seen[sib.ID] = true
+				t.covers = append(t.covers, sib)
+			}
+		}
+		id = parent.ParentID
+	}
+	return t
+}
+
+// originGoal is what a task was for, in the words the work was given. A subtask
+// carries the idea of the whole breakdown in its description; asking a reviewer
+// to judge assembled work against one subtask's slice of it would fault the
+// group for everything that slice does not mention.
+func originGoal(t models.Task) string {
+	if t.GroupID != "" {
+		if idea := GroupIdea(t.Description); idea != "" {
+			return idea
+		}
+	}
+	return t.Goal
 }
 
 // reviewGroupAfterRun reviews a whole breakdown once its schedule has finished.
@@ -158,19 +224,44 @@ func (l *Loop) reviewGroupAfterRun(ctx context.Context, plan *Plan) {
 	if !l.reviewEnabled() || stopped(ctx) {
 		return
 	}
-	tasks, err := l.store.TasksInGroup(plan.GroupID)
-	if err != nil || len(tasks) == 0 {
+	target, err := l.groupTargetFor(plan)
+	if err != nil || target == nil {
 		return
+	}
+	l.runReview(ctx, *target)
+}
+
+// groupTarget resolves a breakdown's schedule before building its target, for a
+// caller holding only a group id — the startup sweep, which arrives after the
+// process that planned the group is gone.
+func (l *Loop) groupTarget(groupID string) (*reviewTarget, error) {
+	plan, err := l.PlanGroup(groupID)
+	if err != nil {
+		return nil, err
+	}
+	return l.groupTargetFor(plan)
+}
+
+// groupTargetFor is what one verdict on a breakdown covers: every subtask, held
+// to the idea they were split from and to the criteria they were each given.
+// A nil target means there is nothing to judge — see the whole-group rule above.
+func (l *Loop) groupTargetFor(plan *Plan) (*reviewTarget, error) {
+	tasks, err := l.store.TasksInGroup(plan.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(tasks) == 0 {
+		return nil, nil
 	}
 	for _, t := range tasks {
 		if !awaitingReview(t) {
-			return
+			return nil, nil
 		}
 	}
 
 	anchor := anchorTask(plan, tasks)
 	if anchor == nil {
-		return
+		return nil, nil
 	}
 
 	idea, criteria, summaries := "", []string{}, []string{}
@@ -189,13 +280,118 @@ func (l *Loop) reviewGroupAfterRun(ctx context.Context, plan *Plan) {
 		idea = anchor.Goal
 	}
 
-	l.runReview(ctx, reviewTarget{
+	return &reviewTarget{
 		anchor:   *anchor,
 		covers:   tasks,
 		goal:     idea,
 		criteria: strings.Join(criteria, "\n"),
 		summary:  strings.Join(summaries, "\n\n"),
-	})
+	}, nil
+}
+
+// ReviewParked delivers the verdicts a previous process owed. A review is run
+// from the goroutine that ran the task, so a restart — or a crash, or a shutdown
+// that ran out of drain time — between a run settling and its review finishing
+// strands the work in the review column with nothing left that would ever look
+// at it again.
+//
+// It returns how many verdicts it queued and does the work in the background:
+// each one is a model call, and the server should not wait on the provider
+// before it starts listening. The reviews run one at a time for the same reason
+// the schedule is bounded — a restart after a wide breakdown would otherwise
+// open a review per subtask at once.
+func (l *Loop) ReviewParked(ctx context.Context) int {
+	if !l.reviewEnabled() {
+		return 0
+	}
+	targets, err := l.parkedTargets()
+	if err != nil {
+		log.Printf("could not list work awaiting review: %v\n", err)
+		return 0
+	}
+	if len(targets) == 0 {
+		return 0
+	}
+
+	sweepCtx, cancel := context.WithCancel(ctx)
+	l.mu.Lock()
+	l.sweep = cancel
+	l.mu.Unlock()
+
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		defer cancel()
+		for _, t := range targets {
+			if stopped(sweepCtx) {
+				return
+			}
+			// A task the server has since started is no longer parked, and the
+			// run that started it will review it when it ends.
+			runCtx, ok := l.claimRun(sweepCtx, t.anchor.ID)
+			if !ok {
+				continue
+			}
+			l.runReview(runCtx, t)
+			l.clearRun(t.anchor.ID)
+		}
+	}()
+	return len(targets)
+}
+
+// parkedTargets resolves the work awaiting a verdict into the verdicts that
+// would answer for it, which is fewer: a breakdown is one target rather than
+// five, and a rejected task with a rework under it is covered by the rework's.
+func (l *Loop) parkedTargets() ([]reviewTarget, error) {
+	parked, err := l.store.TasksAwaitingReview()
+	if err != nil {
+		return nil, err
+	}
+
+	// A parked task that a parked rework descends from is not swept on its own.
+	// The rework's verdict already covers it — see soloTarget — and reviewing
+	// both would spend two calls to reach one answer about one workspace.
+	superseded := map[string]bool{}
+	for _, t := range parked {
+		if t.ParentID != "" {
+			superseded[t.ParentID] = true
+		}
+	}
+	// A group whose work is being reworked waits on that rework, whichever of its
+	// subtasks the rejection hung on.
+	for _, t := range parked {
+		if t.GroupID != "" && superseded[t.ID] {
+			superseded[t.GroupID] = true
+		}
+	}
+
+	var targets []reviewTarget
+	seenGroup := map[string]bool{}
+	for _, t := range parked {
+		if superseded[t.ID] {
+			continue
+		}
+		if t.GroupID == "" {
+			targets = append(targets, l.soloTarget(t))
+			continue
+		}
+		if seenGroup[t.GroupID] || superseded[t.GroupID] {
+			continue
+		}
+		seenGroup[t.GroupID] = true
+		target, err := l.groupTarget(t.GroupID)
+		if err != nil {
+			// A group that cannot be planned cannot be reviewed as a group, and
+			// reviewing its subtasks one by one is the thing the whole column
+			// exists to avoid. It stays parked and says why.
+			log.Printf("cannot review group %s: %v\n", shortID(t.GroupID), err)
+			continue
+		}
+		if target != nil {
+			targets = append(targets, *target)
+		}
+	}
+	return targets, nil
 }
 
 // awaitingReview reports a task parked in the review column by a run that

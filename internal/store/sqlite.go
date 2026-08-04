@@ -407,6 +407,34 @@ func (s *Store) SetTaskInReview(id, summary string) error {
 	return s.settle(id, models.ColumnReview, summary)
 }
 
+// TasksAwaitingReview lists the runs parked in front of a reviewer that no
+// verdict was ever recorded for. A verdict is delivered by the goroutine that
+// ran the task, so a process that goes away between a run settling and its
+// review finishing leaves the work here: done, unjudged, and invisible to
+// `fanout blocked`, which lists what stopped rather than what was never judged.
+//
+// Anything the review did reach has moved on or carries an error, so done in the
+// review column is exactly the set still owed an answer.
+func (s *Store) TasksAwaitingReview() ([]models.Task, error) {
+	rows, err := s.db.Query(
+		"SELECT "+taskCols+" FROM tasks WHERE column = ? AND status = ? ORDER BY created_at ASC",
+		models.ColumnReview, models.StatusDone,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := []models.Task{}
+	for rows.Next() {
+		t := models.Task{}
+		if err := scanTask(rows.Scan, &t); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
 // SetTaskSummary rewrites the summary alone, for a verdict that changes what is
 // known about a run without moving it.
 func (s *Store) SetTaskSummary(id, summary string) error {

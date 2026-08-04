@@ -97,6 +97,20 @@ func main() {
 			}
 		}
 	}
+	// After the sandbox, so a swept review can run what it is judging rather than
+	// only read it. A verdict is delivered by the goroutine that ran the task, so
+	// work parked in review by a process that went away is owed one by this one.
+	if n := loop.ReviewParked(context.Background()); n > 0 {
+		log.Printf("reviewing %d run(s) left awaiting a verdict by an earlier process\n", n)
+	} else if !cfg.Review {
+		// Nothing here will judge them, and nothing lists them either: they are
+		// filed as done, which is what `fanout blocked` skips. Saying so once is
+		// the difference between work waiting and work lost.
+		if parked, err := s.TasksAwaitingReview(); err == nil && len(parked) > 0 {
+			log.Printf("%d run(s) are parked in review with FANOUT_REVIEW off; turn it on to have them judged, or move them on the board\n", len(parked))
+		}
+	}
+
 	srv := server.New(s, loop, client, cfg, ui())
 
 	stop := make(chan os.Signal, 1)

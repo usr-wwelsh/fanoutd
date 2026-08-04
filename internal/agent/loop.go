@@ -144,6 +144,9 @@ type Loop struct {
 	// reviewModel names what that agent runs on. See review.go.
 	review      bool
 	reviewModel string
+	// sweep cancels the startup review sweep, which belongs to no task and no
+	// group and so is reachable through neither map.
+	sweep context.CancelFunc
 }
 
 // SetSandbox enables the shell tool. A nil sandbox leaves agents file-only.
@@ -195,14 +198,10 @@ func (l *Loop) startTracked(parent context.Context, taskID string) (<-chan struc
 		return nil, fmt.Errorf("task %s not found", taskID)
 	}
 
-	l.mu.Lock()
-	if _, running := l.cancels[taskID]; running {
-		l.mu.Unlock()
+	ctx, ok := l.claimRun(parent, taskID)
+	if !ok {
 		return nil, ErrAlreadyRunning
 	}
-	ctx, cancel := context.WithCancel(parent)
-	l.cancels[taskID] = cancel
-	l.mu.Unlock()
 
 	// Starting a task is an instruction to keep working on it, so it withdraws
 	// any standing "finished" mark. The loop treats that flag as a live stop
@@ -240,6 +239,22 @@ func (l *Loop) startTracked(parent context.Context, taskID string) (<-chan struc
 	return done, nil
 }
 
+// claimRun registers a task as busy and returns the context that work runs
+// under, or false if something already holds it. Review takes a claim as well as
+// a run does: a verdict is still work being done to a workspace, and a sweep
+// reviewing a task while the user presses start on it would have two agents in
+// one directory.
+func (l *Loop) claimRun(parent context.Context, taskID string) (context.Context, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, busy := l.cancels[taskID]; busy {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	l.cancels[taskID] = cancel
+	return ctx, true
+}
+
 // Stop cancels a running loop. It reports whether a run was actually cancelled.
 func (l *Loop) Stop(taskID string) bool {
 	l.mu.Lock()
@@ -255,7 +270,10 @@ func (l *Loop) Stop(taskID string) bool {
 // StopAll cancels every active run and schedule, for shutdown.
 func (l *Loop) StopAll() {
 	l.mu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(l.cancels)+len(l.groups))
+	cancels := make([]context.CancelFunc, 0, len(l.cancels)+len(l.groups)+1)
+	if l.sweep != nil {
+		cancels = append(cancels, l.sweep)
+	}
 	for _, cancel := range l.groups {
 		cancels = append(cancels, cancel)
 	}
