@@ -22,10 +22,32 @@ import (
 // the author's summary as a claim to check, and the files. A reviewer replaying
 // the author's reasoning inherits the author's reasons for the shortcuts.
 
-// reviewMaxSteps bounds one verdict. A reviewer needs to list, read a few files
-// and run something; one that has not reached a verdict in ten steps is reading
-// the whole workspace rather than checking the criteria.
-const reviewMaxSteps = 10
+// The step budget for one verdict. A reviewer needs to list, read the files the
+// criteria are about, and run the thing.
+//
+// It is not a flat number because a verdict is not a fixed size: a solo run is
+// one goal over the files one agent wrote, while a breakdown's verdict covers
+// every subtask at once — five sets of criteria, five agents' output, and an
+// integration to execute on top. A cap set for the first and applied to the
+// second left reviews of real breakdowns spending every step reading and
+// reaching no verdict at all, which faults work nobody has actually judged.
+const (
+	reviewBaseSteps    = 14
+	reviewStepsPerTask = 4
+	reviewMaxSteps     = 30
+)
+
+// reviewSteps is that budget for a verdict covering n runs.
+func reviewSteps(covers int) int {
+	if covers < 1 {
+		covers = 1
+	}
+	steps := reviewBaseSteps + reviewStepsPerTask*(covers-1)
+	if steps > reviewMaxSteps {
+		return reviewMaxSteps
+	}
+	return steps
+}
 
 // maxReviewRounds is how many times one line of work may be sent back before it
 // stops going round and waits for a person. Without it a task the model cannot
@@ -487,8 +509,10 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 	}
 	step := len(prior)
 	parseFailures := 0
+	budget := reviewSteps(len(t.covers))
+	seen := map[string]int{}
 
-	for i := 0; i < reviewMaxSteps; i++ {
+	for i := 0; i < budget; i++ {
 		if stopped(ctx) {
 			return
 		}
@@ -526,6 +550,22 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 
 		verdict, note, calls := splitVerdict(result.Tools)
 
+		// A reviewer going round the same call is not converging on anything: it
+		// cannot change the work, so the same read returns the same bytes it
+		// already has. Rather than spend the rest of the budget on it, the
+		// question is put straight away — it has seen everything it is going to.
+		if verdict == "" {
+			for _, pc := range calls {
+				key := pc.Call.signature()
+				seen[key]++
+				if seen[key] >= repeatLimit {
+					l.decideNow(ctx, t, model, messages, step,
+						fmt.Sprintf("the reviewer repeated the same %s call %d times without reaching a verdict", pc.Call.Name, seen[key]))
+					return
+				}
+			}
+		}
+
 		// Calls run even on the turn that reaches a verdict: a reviewer routinely
 		// reads one last file alongside its pass, and the exchange has to be
 		// complete whether or not anything follows it.
@@ -558,7 +598,59 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 		}
 	}
 
-	l.reviewFailed(t, step, fmt.Sprintf("the reviewer reached no verdict in %d steps", reviewMaxSteps))
+	l.decideNow(ctx, t, model, messages, step,
+		fmt.Sprintf("the reviewer reached no verdict in %d steps", budget))
+}
+
+// reviewDecidePrompt is the turn a reviewer gets when its steps run out. It is
+// not another chance to look — the tools are gone by the time it is asked.
+const reviewDecidePrompt = `Stop looking. Your steps are spent and you have no tools left but the verdict.
+
+Decide on what you have already seen and call pass or reject now.
+
+A criterion you did not get to is a criterion you could not confirm, and that is
+a reject rather than a pass. Say so in the findings: name the files you checked
+and what you found, and name the ones you never reached, so the rework agent
+starts where you stopped.`
+
+// decideNow puts the question directly to a reviewer that has run out of road,
+// whether by spending its budget or by going round in circles.
+//
+// Without it the pass ends in reviewFailed, which is the worst of the outcomes
+// available and the one the reviewer least intended: the work is neither
+// accepted nor sent back, every task it covered is faulted, and a person has to
+// open it to find that nothing was actually wrong except that the reviewer ran
+// long. A reviewer eight files into a ten-file workspace has an opinion; this
+// asks for it. Only a reviewer that will not answer even then is a failed one.
+func (l *Loop) decideNow(ctx context.Context, t reviewTarget, model string, messages []openrouter.MsgBlock, step int, why string) {
+	if stopped(ctx) {
+		return
+	}
+	messages = append(messages, openrouter.MsgBlock{Role: "user", Content: reviewDecidePrompt})
+
+	resp, err := l.client.Chat(ctx, messages, openrouter.ChatOptions{Tools: VerdictToolDefs(), Model: model})
+	if err != nil {
+		if stopped(ctx) {
+			return
+		}
+		l.reviewFailed(t, step, fmt.Sprintf("%s, and the call asking it to decide failed: %v", why, err))
+		return
+	}
+
+	step++
+	result, err := parseResponse(resp)
+	if err != nil {
+		l.reviewFailed(t, step, why)
+		return
+	}
+	verdict, note, _ := splitVerdict(result.Tools)
+	if verdict == "" {
+		l.reviewFailed(t, step, why)
+		return
+	}
+
+	l.store.AddTraceStep(t.anchor.ID, step, reviewPrefix+"asked to decide", "", result.Text, "", why)
+	l.settleReview(ctx, t, step, verdict, note)
 }
 
 // traceOf renders a just-written entry as the row it became, so the reviewer's
@@ -727,6 +819,17 @@ func reviewMessages(t reviewTarget, workspace string, files []FileEntry, sandbox
 		fmt.Fprintf(&b, "\nWhat the author claims it produced:\n%s\n", truncate(s, 2000))
 	}
 
+	// A conceded run is the one most likely to be half-built, and its summary
+	// says so — but it says so at the end of a wall of prose that gets truncated,
+	// beside four siblings that did finish. Saying it here, in its own line, is
+	// what makes the difference between a reviewer checking those parts and one
+	// skimming a summary that reads like every other.
+	if names := t.conceded(); len(names) > 0 {
+		fmt.Fprintf(&b, "\nRan out of steps rather than finishing: %s\n", strings.Join(names, ", "))
+		b.WriteString("Nobody signed that part of the work off, so assume nothing about it. " +
+			"Check the criteria it was meant to meet against the files, and if what they call for is missing or half-written, reject and say which file stops where.\n")
+	}
+
 	if len(files) > 0 {
 		b.WriteString("\nFiles in the workspace:\n")
 		for _, f := range files {
@@ -746,6 +849,21 @@ func reviewMessages(t reviewTarget, workspace string, files []FileEntry, sandbox
 		{Role: "system", Content: system},
 		{Role: "user", Content: b.String()},
 	}
+}
+
+// conceded names the runs under this verdict whose agent never called finish.
+// They are filed as done and reviewed like any other — a run that wrote working
+// files and never realised it should sign off is the ordinary case, and filing
+// it as an error would bury the deliverable — but the reviewer is not left to
+// infer it from the prose.
+func (t reviewTarget) conceded() []string {
+	var out []string
+	for _, task := range t.covers {
+		if strings.HasPrefix(strings.TrimSpace(task.Summary), concededMark) {
+			out = append(out, task.Title)
+		}
+	}
+	return out
 }
 
 // criteriaList renders stored criteria as the list both the author and the

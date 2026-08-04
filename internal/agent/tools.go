@@ -137,12 +137,22 @@ func ReviewToolDefs(sandboxed bool) []openrouter.Tool {
 				"Returns combined stdout and stderr with the exit status.",
 			map[string]any{"command": str("Shell command line, e.g. \"go test ./...\" or \"node index.js\".")}, "command"))
 	}
-	return append(tools,
+	return append(tools, VerdictToolDefs()...)
+}
+
+// VerdictToolDefs is pass and reject with nothing beside them, for the turn a
+// reviewer that has run out of steps is asked to decide on what it has already
+// seen. Taking the reading tools away is the whole point of that turn: a model
+// offered one more read will take it, and the step after that is the one it does
+// not get.
+func VerdictToolDefs() []openrouter.Tool {
+	str, def := toolString, toolDef
+	return []openrouter.Tool{
 		def(passTool, "Accept the work. Call this only once you have checked every criterion and each one holds.",
 			map[string]any{"summary": str("What you checked and how you checked it, criterion by criterion.")}, "summary"),
 		def(rejectTool, "Send the work back. Call this when any criterion does not hold.",
 			map[string]any{"findings": str("What is wrong and how to tell you have fixed it. Written for the agent that will do the rework, naming files and observed behaviour.")}, "findings"),
-	)
+	}
 }
 
 // reviewTool reports whether a call is one the reviewer is allowed to make.

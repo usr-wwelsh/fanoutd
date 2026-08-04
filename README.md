@@ -197,8 +197,23 @@ summary and the verdict. **Reject** leaves the reviewed work in Review and opens
 a *rework* task: same workspace, the findings as its goal, the same criteria, and
 it starts immediately. That happens at most twice — past `maxReviewRounds` the
 work stops going round and is parked with an `error` status, which is what
-`fanout blocked` lists. A review that reaches no verdict changes nothing and
-parks the same way.
+`fanout blocked` lists.
+
+A reviewer gets a step budget that grows with what its verdict covers, since a
+breakdown's verdict is over every subtask's files and criteria at once. When it
+runs out — or goes round the same call, which for a reviewer converges on nothing
+since it cannot change the work — it gets one more turn with the reading tools
+taken away and the question put directly: on what you have seen, pass or reject.
+A criterion it never reached is one it could not confirm, and it is told to say
+so in the findings. Only a reviewer that will not answer even then has reached no
+verdict; that changes nothing and parks the work with an `error` for a person,
+which is the worst of the three outcomes and no longer the one a reviewer falls
+into by reading too much.
+
+A run that hit its own step limit is filed as done and reviewed like the rest —
+it is the run most likely to be half-built, which is an argument for checking it
+rather than for filing it unchecked. The reviewer is told outright which parts
+those were, rather than being left to notice it in the summary.
 
 Solo tasks are reviewed one at a time. **A breakdown is reviewed whole**, once
 every subtask is in and only if every one of them finished: sending one subtask

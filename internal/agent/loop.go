@@ -727,6 +727,11 @@ func (l *Loop) concede(taskID string, step int, reason string) {
 	l.settleRun(taskID, concededSummary(files, step, reason))
 }
 
+// concededMark opens the summary of every conceded run. It is what separates
+// work an agent signed off on from work it ran out of road on — the two arrive
+// in the review column looking alike, and the reviewer is told which it holds.
+const concededMark = "Stopped after"
+
 // concededSummary says plainly that the agent never called finish, so a task
 // that reads as done is not mistaken for one the model signed off on.
 func concededSummary(files []FileEntry, step int, reason string) string {
@@ -739,8 +744,8 @@ func concededSummary(files []FileEntry, step int, reason string) string {
 		noun = "file"
 	}
 	return fmt.Sprintf(
-		"Stopped after %d steps without calling finish (%s). The workspace holds %d %s: %s.",
-		step, reason, len(names), noun, strings.Join(names, ", "),
+		"%s %d steps without calling finish (%s). The workspace holds %d %s: %s.",
+		concededMark, step, reason, len(names), noun, strings.Join(names, ", "),
 	)
 }
 

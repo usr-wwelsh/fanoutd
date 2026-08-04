@@ -31,6 +31,14 @@ type fakeReviewer struct {
 	// briefs holds the opening prompt of every review pass, which is what a test
 	// about what a reviewer was told has to look at.
 	briefs []string
+	// decide is what the reviewer answers on the turn its tools are taken away,
+	// and decided counts how many times it was asked. A reviewer that is never
+	// asked leaves this at zero, which is the assertion for the ordinary path.
+	decide  *reviewCall
+	decided int
+	// turns counts review requests of any kind, for a test about how many steps
+	// a pass actually spent.
+	turns int
 }
 
 func (f *fakeReviewer) lastBrief() string {
@@ -60,9 +68,16 @@ func (f *fakeReviewer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	call := reviewCall{name: passTool, args: map[string]string{"summary": "nothing left to check"}}
-	if len(f.calls) > 0 {
+	switch {
+	case isDecideRequest(body):
+		f.decided++
+		if f.decide != nil {
+			call = *f.decide
+		}
+	case len(f.calls) > 0:
 		call, f.calls = f.calls[0], f.calls[1:]
 	}
+	f.turns++
 	f.briefs = append(f.briefs, reviewBrief(body))
 	f.mu.Unlock()
 
@@ -91,6 +106,22 @@ func isReviewRequest(body []byte) bool {
 	}
 	return req.Messages[0].Role == "system" &&
 		strings.Contains(req.Messages[0].Content, "You are reviewing work produced by another agent")
+}
+
+// isDecideRequest reports the turn where the reviewer's reading tools have been
+// taken away and it is asked to answer from what it has already seen.
+func isDecideRequest(body []byte) bool {
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
+		return false
+	}
+	last := req.Messages[len(req.Messages)-1]
+	return last.Role == "user" && strings.Contains(last.Content, "Stop looking.")
 }
 
 // reviewBrief is the user turn a review pass opens with: the goal, the criteria
@@ -529,6 +560,120 @@ func TestAnchorIsTheLastSubtaskScheduled(t *testing.T) {
 	}
 	if anchorTask(&Plan{}, tasks) != nil {
 		t.Error("a plan with no waves produced an anchor")
+	}
+}
+
+// A reviewer that spends its budget without answering used to fault every task
+// it covered — work neither accepted nor sent back, and a person left to open it
+// and find that nothing was wrong except that the reviewer ran long. It is asked
+// for the opinion it already has instead.
+func TestReviewOutOfStepsIsAskedToDecide(t *testing.T) {
+	reads := make([]reviewCall, reviewMaxSteps)
+	for i := range reads {
+		// Distinct paths: a reviewer going round the same call is a different
+		// case, and the guard for it is tested below.
+		reads[i] = reviewCall{"read_file", map[string]string{"path": fmt.Sprintf("part%d.js", i)}}
+	}
+	l, s, f := reviewLoopWithModel(t, reads...)
+	f.decide = &reviewCall{rejectTool, map[string]string{"findings": "renderer.js stops halfway through initGL"}}
+	task := awaiting(t, s, store.NewTask{Title: "renderer"}, "wrote renderer.js")
+
+	l.reviewAfterRun(context.Background(), task.ID)
+
+	if f.decided != 1 {
+		t.Fatalf("the reviewer was asked to decide %d times, want once", f.decided)
+	}
+	got, _ := s.GetTask(task.ID)
+	if got.Verdict != models.VerdictRejected {
+		t.Errorf("verdict = %q, want the one it gave when asked", got.Verdict)
+	}
+	if got.Status == models.StatusError {
+		t.Error("the work was faulted even though the reviewer reached a verdict")
+	}
+	if findRework(t, s, task.ID) == nil {
+		t.Error("the rejection opened no rework")
+	}
+}
+
+// One verdict over a breakdown covers every subtask's files and criteria at
+// once, so it is given more room than a verdict on a single run.
+func TestReviewStepsScaleWithWhatOneVerdictCovers(t *testing.T) {
+	solo := reviewSteps(1)
+	if solo != reviewBaseSteps {
+		t.Errorf("reviewSteps(1) = %d, want %d", solo, reviewBaseSteps)
+	}
+	if group := reviewSteps(3); group <= solo {
+		t.Errorf("reviewSteps(3) = %d, want more than a solo run's %d", group, solo)
+	}
+	if got := reviewSteps(50); got != reviewMaxSteps {
+		t.Errorf("reviewSteps(50) = %d, want the cap %d", got, reviewMaxSteps)
+	}
+}
+
+// A reviewer cannot change the work, so the same read returns the same bytes it
+// already has. Going round it is not converging on anything, and the rest of the
+// budget is better spent asking for the verdict.
+func TestReviewLoopingOnOneCallIsAskedToDecide(t *testing.T) {
+	same := make([]reviewCall, reviewMaxSteps)
+	for i := range same {
+		same[i] = reviewCall{"read_file", map[string]string{"path": "index.html"}}
+	}
+	l, s, f := reviewLoopWithModel(t, same...)
+	f.decide = &reviewCall{passTool, map[string]string{"summary": "index.html holds all of it"}}
+	task := awaiting(t, s, store.NewTask{Title: "page"}, "wrote index.html")
+
+	l.reviewAfterRun(context.Background(), task.ID)
+
+	if f.decided != 1 {
+		t.Fatalf("the reviewer was asked to decide %d times, want once", f.decided)
+	}
+	if f.turns >= reviewBaseSteps {
+		t.Errorf("the pass took %d turns, want the loop cut short well inside the budget", f.turns)
+	}
+	if got, _ := s.GetTask(task.ID); got.Column != models.ColumnFinished {
+		t.Errorf("column = %q, want the verdict it gave to have been filed", got.Column)
+	}
+}
+
+// A reviewer that will not answer even with the question put directly has
+// produced nothing, and the work stays where it is for a person.
+func TestReviewThatNeverAnswersParksTheWork(t *testing.T) {
+	reads := make([]reviewCall, reviewMaxSteps)
+	for i := range reads {
+		reads[i] = reviewCall{"read_file", map[string]string{"path": fmt.Sprintf("part%d.js", i)}}
+	}
+	l, s, f := reviewLoopWithModel(t, reads...)
+	f.decide = &reviewCall{"list_files", nil}
+	task := awaiting(t, s, store.NewTask{Title: "renderer"}, "wrote renderer.js")
+
+	l.reviewAfterRun(context.Background(), task.ID)
+
+	got, _ := s.GetTask(task.ID)
+	if got.Status != models.StatusError {
+		t.Errorf("status = %q, want the work put in front of a person", got.Status)
+	}
+	if got.Column != models.ColumnReview {
+		t.Errorf("column = %q, want the work left where it was", got.Column)
+	}
+}
+
+// A run that hit its step limit is filed as done like any other, and its summary
+// says so at the end of a wall of prose. The reviewer is told outright, or it
+// skims a claim that reads like every other and passes half-built work.
+func TestReviewerIsToldWhichWorkRanOutOfSteps(t *testing.T) {
+	l, s, f := reviewLoopWithModel(t)
+	awaiting(t, s, store.NewTask{Title: "stylesheet", GroupID: "g1", WorkspaceID: "ws1"}, "wrote style.css")
+	last := awaiting(t, s, store.NewTask{Title: "orchestrator", GroupID: "g1", WorkspaceID: "ws1"},
+		concededSummary([]FileEntry{{Path: "game.js"}}, 20, "reached the 20 step limit without meeting the goal"))
+
+	l.reviewAfterRun(context.Background(), last.ID)
+
+	brief := f.lastBrief()
+	if !strings.Contains(brief, "Ran out of steps rather than finishing: orchestrator") {
+		t.Errorf("the reviewer was not told which subtask never signed off:\n%s", brief)
+	}
+	if strings.Contains(brief, "finishing: stylesheet") {
+		t.Error("a subtask that did sign off was named as having run out of steps")
 	}
 }
 
