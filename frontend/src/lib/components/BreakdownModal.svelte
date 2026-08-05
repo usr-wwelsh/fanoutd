@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onDestroy } from 'svelte';
   import { AuthError, breakdown, fetchGroupPlan, stopGroup } from '../api.js';
+  import { collectSeed, describeSeed } from '../seed.js';
   import ModelPicker from './ModelPicker.svelte';
 
   const dispatch = createEventDispatcher();
@@ -14,6 +15,14 @@
   let result = $state(null);
   let plan = $state(null);
   let poll = null;
+
+  // The seed is read here and travels in the request body, so what the planner
+  // is shown is settled before the slow call starts.
+  let seed = $state([]);
+  let skipped = $state([]);
+  let seedError = $state('');
+  let fileInput = $state(null);
+  let dirInput = $state(null);
 
   let byId = $derived(new Map((plan?.tasks ?? []).map(t => [t.id, t])));
   let waves = $derived(plan?.waves ?? []);
@@ -36,7 +45,7 @@
     try {
       // The server does one or two model calls before it answers, so this is
       // the one request in the UI measured in tens of seconds.
-      result = await breakdown({ idea, model, start: true });
+      result = await breakdown({ idea, model, start: true, seed });
       plan = result.plan ?? null;
       dispatch('created');
       if (result.group_id) startPolling(result.group_id);
@@ -44,6 +53,32 @@
       error = e instanceof AuthError ? 'The session expired. Log in again to continue.' : e.message;
     }
     loading = false;
+  }
+
+  // A pick adds to what is already there, so files and a folder can both go in.
+  // The input is cleared afterwards or picking the same path twice is a no-op.
+  async function addFiles(event) {
+    const picked = [...(event.target.files ?? [])];
+    event.target.value = '';
+    if (!picked.length) return;
+    seedError = '';
+    try {
+      const next = await collectSeed(picked, seed);
+      seed = next.files;
+      skipped = next.skipped;
+    } catch (e) {
+      seedError = e.message;
+    }
+  }
+
+  function removeSeed(path) {
+    seed = seed.filter(f => f.path !== path);
+  }
+
+  function clearSeed() {
+    seed = [];
+    skipped = [];
+    seedError = '';
   }
 
   function startPolling(groupId) {
@@ -107,6 +142,43 @@
             placeholder="One thing to build. It is split into subtasks that own different files and run in parallel."
           ></textarea>
         </label>
+        <div class="field">
+          <span class="eyebrow">Seed</span>
+          <div class="seed-pick">
+            <button class="btn tiny" type="button" disabled={loading} onclick={() => fileInput?.click()}>
+              Add files
+            </button>
+            <button class="btn tiny" type="button" disabled={loading} onclick={() => dirInput?.click()}>
+              Add folder
+            </button>
+            {#if seed.length}
+              <span class="seed-tally">{describeSeed(seed)}</span>
+              <button class="btn tiny quiet" type="button" disabled={loading} onclick={clearSeed}>Clear</button>
+            {/if}
+          </div>
+          <input class="hidden-input" type="file" multiple bind:this={fileInput} onchange={addFiles} />
+          <input class="hidden-input" type="file" webkitdirectory bind:this={dirInput} onchange={addFiles} />
+
+          {#if seed.length}
+            <ul class="seed-list">
+              {#each seed as file (file.path)}
+                <li>
+                  <span class="path">{file.path}</span>
+                  <button class="drop" type="button" disabled={loading} aria-label="Remove {file.path}" onclick={() => removeSeed(file.path)}>×</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if skipped.length}
+            <div class="notice">
+              <strong>Skipped</strong>
+              {#each skipped as s (s.path)}<span class="skip">{s.path} — {s.reason}</span>{/each}
+            </div>
+          {/if}
+          {#if seedError}
+            <div class="notice bad">{seedError}</div>
+          {/if}
+        </div>
         <label class="field">
           <span class="eyebrow">Model</span>
           <ModelPicker bind:value={model} disabled={loading} />
@@ -118,6 +190,10 @@
           Each subtask declares the paths it writes and reads. A subtask that reads
           another's output waits for it, so the order comes from the files rather
           than from a list. An idea that will not partition runs as one task.
+          {#if seed.length}
+            The planner is shown the seed, so name those files in the idea to say
+            what to read.
+          {/if}
         </p>
         <div class="modal-actions">
           <button class="btn" type="button" onclick={close} disabled={loading}>Cancel</button>
@@ -198,6 +274,42 @@
     line-height: 1.55;
     color: var(--ink-2);
   }
+
+  .seed-pick { display: flex; align-items: center; gap: 6px; }
+  .seed-tally { font-family: var(--f-mono); font-size: 11px; color: var(--ink-3); }
+  .hidden-input { display: none; }
+
+  .seed-list {
+    margin: 7px 0 0;
+    padding: 0;
+    list-style: none;
+    max-height: 132px;
+    overflow-y: auto;
+    border: 1px solid var(--rule);
+  }
+  .seed-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px 4px 9px;
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+  }
+  .seed-list li + li { border-top: 1px solid var(--rule); }
+  .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drop {
+    background: none;
+    border: none;
+    padding: 0 4px;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .drop:hover:not(:disabled) { color: var(--fault); }
+
+  .skip { display: block; font-family: var(--f-mono); font-size: 11px; }
 
   .tally {
     display: grid;
