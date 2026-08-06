@@ -43,7 +43,11 @@ func New(s *store.Store, l *agent.Loop, c *openrouter.Client, cfg config.Config,
 	return &Server{store: s, loop: l, client: c, cfg: cfg, ui: ui}
 }
 
-func (s *Server) Start(port int) error {
+// handler builds the routed, gated handler the server listens with. It is
+// separate from Start so a test can drive the real routing table — the gate is
+// part of the route, and testing a handler without it proves nothing about what
+// the network can reach.
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/health", s.handleHealth)
@@ -58,10 +62,14 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc(previewPrefix, s.handlePreview)
 	mux.Handle("/", http.FileServer(http.FS(s.ui)))
 
+	return s.withAuth(mux)
+}
+
+func (s *Server) Start(port int) error {
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{
 		Addr:        addr,
-		Handler:     s.withAuth(mux),
+		Handler:     s.handler(),
 		ReadTimeout: 30 * time.Second,
 		// POST /api/breakdown is the one endpoint that blocks on model calls
 		// rather than on the database — up to two of them, each bounded by the
