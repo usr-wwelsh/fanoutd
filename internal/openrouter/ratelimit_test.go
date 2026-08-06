@@ -48,8 +48,11 @@ type limiter struct {
 	// sendHeader controls whether the reset is advertised as a response header
 	// as well as in the body.
 	sendHeader bool
-	reset      time.Time
-	calls      int
+	// noHint refuses without saying when the window reopens, which is what the
+	// exponential fallback exists for.
+	noHint bool
+	reset  time.Time
+	calls  int
 }
 
 func (l *limiter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +65,11 @@ func (l *limiter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.mu.Unlock()
 
 	if refuse {
+		if l.noHint {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"Rate limit exceeded","code":429}}`)
+			return
+		}
 		if l.sendHeader {
 			w.Header().Set("X-RateLimit-Reset", fmt.Sprint(l.reset.UnixMilli()))
 		}
@@ -88,14 +96,42 @@ func noJitter(t *testing.T) {
 	t.Cleanup(func() { jitter = prev })
 }
 
-func TestChatWaitsOutARateLimit(t *testing.T) {
+// recordedWaits collects the delays the retry loop chose and returns from each
+// of them at once. The schedule runs to minutes by design, so a test asserts
+// what was asked for rather than sitting through it.
+type recordedWaits struct {
+	mu   sync.Mutex
+	list []time.Duration
+}
+
+func (r *recordedWaits) all() []time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Duration(nil), r.list...)
+}
+
+func skipWaits(t *testing.T) *recordedWaits {
+	t.Helper()
 	noJitter(t)
-	lim := &limiter{refusals: 2, reset: time.Now().Add(150 * time.Millisecond)}
+	rec := &recordedWaits{}
+	prev := waitFor
+	waitFor = func(ctx context.Context, d time.Duration) error {
+		rec.mu.Lock()
+		rec.list = append(rec.list, d)
+		rec.mu.Unlock()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { waitFor = prev })
+	return rec
+}
+
+func TestChatWaitsOutARateLimit(t *testing.T) {
+	waits := skipWaits(t)
+	lim := &limiter{refusals: 2, reset: time.Now().Add(30 * time.Second)}
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
 	c := NewClient("k", "m", srv.URL)
-	start := time.Now()
 	res, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -106,17 +142,24 @@ func TestChatWaitsOutARateLimit(t *testing.T) {
 	if lim.seen() != 3 {
 		t.Errorf("made %d requests, want 3 (two refused, one served)", lim.seen())
 	}
-	// Both waits came from the reset in the body, not from the backoff — the
-	// fallback's first two delays alone would be three seconds.
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("waited %s, want the hinted reset rather than the backoff", elapsed)
+	// Both waits came from the reset in the body, not from the backoff, whose
+	// first two delays would have been a second and two seconds.
+	got := waits.all()
+	if len(got) != 2 {
+		t.Fatalf("waited %d times, want 2", len(got))
+	}
+	for i, d := range got {
+		if d < 25*time.Second || d > 30*time.Second {
+			t.Errorf("wait %d was %s, want the hinted reset of about 30s", i, d)
+		}
 	}
 }
 
 // The header is the documented place to look; the body copy is the fallback.
 // Either alone has to be enough.
 func TestRateLimitResetIsReadFromTheHeaderToo(t *testing.T) {
-	lim := &limiter{refusals: 1, sendHeader: true, reset: time.Now().Add(100 * time.Millisecond)}
+	waits := skipWaits(t)
+	lim := &limiter{refusals: 1, sendHeader: true, reset: time.Now().Add(30 * time.Second)}
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
@@ -127,11 +170,44 @@ func TestRateLimitResetIsReadFromTheHeaderToo(t *testing.T) {
 	if lim.seen() != 2 {
 		t.Errorf("made %d requests, want 2", lim.seen())
 	}
+	got := waits.all()
+	if len(got) != 1 {
+		t.Fatalf("waited %d times, want 1", len(got))
+	}
+	if got[0] < 25*time.Second || got[0] > 30*time.Second {
+		t.Errorf("waited %s, want the reset from the header", got[0])
+	}
+}
+
+// Without a hint the loop falls back to doubling a second, which is the only
+// thing standing between a silent 429 and a hot retry loop.
+func TestUnhintedRateLimitBacksOffExponentially(t *testing.T) {
+	waits := skipWaits(t)
+	lim := &limiter{refusals: 1000, noHint: true}
+	srv := httptest.NewServer(lim)
+	defer srv.Close()
+
+	c := NewClient("k", "m", srv.URL)
+	if _, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{}); err == nil {
+		t.Fatal("a permanent rate limit returned success")
+	}
+
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	got := waits.all()
+	if len(got) != len(want) {
+		t.Fatalf("waited %d times, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("wait %d was %s, want %s", i, got[i], want[i])
+		}
+	}
 }
 
 // A limit that never lifts still has to end, and say what it was.
 func TestChatGivesUpOnAPermanentRateLimit(t *testing.T) {
-	lim := &limiter{refusals: 1000, reset: time.Now().Add(20 * time.Millisecond)}
+	skipWaits(t)
+	lim := &limiter{refusals: 1000, reset: time.Now().Add(30 * time.Second)}
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 

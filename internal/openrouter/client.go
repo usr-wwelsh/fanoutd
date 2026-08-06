@@ -212,10 +212,8 @@ func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
 		if hinted, ok := retryHint(got); ok {
 			wait = hinted
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(wait + jitter()):
+		if err := waitFor(ctx, wait+jitter()); err != nil {
+			return nil, err
 		}
 		delay *= 2
 	}
@@ -306,6 +304,20 @@ func clampWait(d time.Duration) (time.Duration, bool) {
 // chosen is not measuring the spread on top of it.
 var jitter = func() time.Duration {
 	return time.Duration(rand.Int63n(int64(rateLimitJitter)))
+}
+
+// waitFor pauses between rate-limit retries, returning early if the run is
+// cancelled — a cancelled task must not have to sit out the backoff first. It is
+// a variable so a test can assert which delays were chosen without spending them
+// in real time; the schedule is minutes long by design and no suite should wait
+// it out.
+var waitFor = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 // attempt runs one streaming request. The response is consumed as it arrives so
