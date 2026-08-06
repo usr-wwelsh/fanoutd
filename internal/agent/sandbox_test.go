@@ -11,6 +11,13 @@ import (
 
 // testSandbox builds a real sandbox or skips. The point of these tests is what
 // bubblewrap actually enforces, so faking it would test nothing.
+//
+// A contributor without bwrap should not be blocked by tests of a jail their
+// machine cannot build, so a missing sandbox skips. CI is the opposite case:
+// this is the boundary that keeps a model off the host, and a silent skip there
+// is indistinguishable from a pass. Setting FANOUT_REQUIRE_SANDBOX turns the
+// skip into a failure, so an environment that was meant to exercise the jail
+// says so when it cannot.
 func testSandbox(t *testing.T, cfg SandboxConfig) *Sandbox {
 	t.Helper()
 	if cfg.StateDir == "" {
@@ -21,6 +28,9 @@ func testSandbox(t *testing.T, cfg SandboxConfig) *Sandbox {
 	}
 	sb, err := NewSandbox(cfg)
 	if err != nil {
+		if os.Getenv("FANOUT_REQUIRE_SANDBOX") != "" {
+			t.Fatalf("FANOUT_REQUIRE_SANDBOX is set but no sandbox could be built: %v", err)
+		}
 		t.Skipf("no usable sandbox: %v", err)
 	}
 	return sb

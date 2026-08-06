@@ -22,8 +22,18 @@ jobs:
       # The agent's shell tool runs inside bwrap. Without it the sandbox tests
       # skip themselves, and the jail that keeps a model off the host would go
       # unexercised — which is the one part of this that must not.
+      #
+      # Installing the binary is not enough: Ubuntu 24.04 ships an AppArmor
+      # profile that denies unprivileged user namespaces, so bwrap is present
+      # and every jail it tries to build fails. Lifting the restriction is what
+      # makes the runner behave like the machines fanoutd actually runs on.
       - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --ro-bind / / /bin/true && echo "bwrap builds a jail"
 
       - name: Vet
         run: go vet ./...
@@ -31,12 +41,13 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # FANOUT_REQUIRE_SANDBOX makes the sandbox tests fail rather than skip.
+      # The runner was just set up to build a jail; if it cannot, that is a
+      # broken assumption to hear about, not to skip past.
       - name: Test
+        env:
+          FANOUT_REQUIRE_SANDBOX: "1"
         run: go test -race ./...
-
-      - name: Report skipped tests
-        if: always()
-        run: go test ./... -run 'TestSandbox' -v 2>&1 | grep -E '^\s*--- SKIP' || echo "no sandbox tests skipped"
 
   frontend:
     runs-on: ubuntu-latest
