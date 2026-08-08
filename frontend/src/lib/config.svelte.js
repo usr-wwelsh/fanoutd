@@ -2,9 +2,9 @@
 //
 // Only one thing needs them, and it is the thing the tasks cannot say: an empty
 // Review column is either nothing waiting or nothing that will ever be filed
-// there, and those want opposite words. Fetched once per session, since a
-// setting comes from the environment the server started in and cannot change
-// under a running process.
+// there, and those want opposite words. Fetched once when the board opens and
+// again whenever the settings page saves, which is the only other way they move
+// under a running server.
 
 import { fetchConfig } from './api.js';
 

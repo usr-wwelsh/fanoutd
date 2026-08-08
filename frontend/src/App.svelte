@@ -4,6 +4,7 @@
   import TaskDetail from './lib/components/TaskDetail.svelte';
   import NewTaskModal from './lib/components/NewTaskModal.svelte';
   import BreakdownModal from './lib/components/BreakdownModal.svelte';
+  import SettingsModal from './lib/components/SettingsModal.svelte';
   import Login from './lib/components/Login.svelte';
   import { onMount } from 'svelte';
   import { active, toggleTheme } from './lib/theme.svelte.js';
@@ -18,6 +19,7 @@
   let focus = $state(null);
   let showNewTask = $state(false);
   let showBreakdown = $state(false);
+  let showSettings = $state(false);
   let loading = $state(true);
   let error = $state('');
   let authRequired = $state(false);
@@ -87,6 +89,7 @@
     focus = null;
     showNewTask = false;
     showBreakdown = false;
+    showSettings = false;
     error = '';
   }
 
@@ -223,6 +226,20 @@
         title="Switch to {dark ? 'light' : 'dark'} for this tab — reopening follows your system"
         aria-label="Switch to {dark ? 'light' : 'dark'} theme"
       >{dark ? '☀' : '☾'}</button>
+      <!-- Drawn rather than typed: the gear codepoint renders as a flat glyph in
+           most UI fonts and reads as a snowflake at this size. -->
+      <button
+        class="btn quiet icon"
+        onclick={() => showSettings = true}
+        title="Server settings"
+        aria-label="Server settings"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
       <button class="btn quiet" onclick={handleRefresh} disabled={loading}>Refresh</button>
       <button class="btn" onclick={() => showNewTask = true}>New task</button>
       <button class="btn primary" onclick={() => showBreakdown = true}>Break down an idea</button>
@@ -282,6 +299,10 @@
       on:close={() => showNewTask = false}
       on:created={() => { showNewTask = false; loadTasks(); }}
     />
+  {/if}
+
+  {#if showSettings}
+    <SettingsModal on:close={() => showSettings = false} on:saved={() => loadTasks()} />
   {/if}
 
   <!-- Unlike New Task, this stays open after it submits: the wave plan and the
@@ -348,6 +369,14 @@
   .header-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 
   .theme { font-size: 14px; line-height: 1; padding: 6px 9px; }
+
+  .icon {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 8px;
+    color: var(--ink-2);
+  }
+  .icon:hover { color: var(--ink); }
 
   .banner { margin: 14px 28px 0; }
 

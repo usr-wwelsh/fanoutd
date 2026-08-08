@@ -39,6 +39,23 @@ export async function fetchConfig() {
   return request('/config');
 }
 
+// fetchSettings returns every editable setting: what it is, what it is set to,
+// and where that value came from. Secrets come back with an empty value and a
+// `set` flag — the server never serves one, so the form can only replace them.
+export async function fetchSettings() {
+  return request('/settings');
+}
+
+// saveSettings sends only what changed. A secret left out of `values` is left
+// alone; sending it empty clears it.
+export async function saveSettings(values) {
+  return request('/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  });
+}
+
 export async function fetchTasks() {
   return request('/tasks');
 }
