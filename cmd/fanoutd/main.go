@@ -28,8 +28,13 @@ const (
 
 func main() {
 	cfg := config.Load()
-	if cfg.OpenRouterKey == "" {
-		log.Fatal("OPENROUTER_API_KEY is required. Set it in the env file or OPENROUTER_API_KEY env var")
+
+	// Resolve before anything is opened or created. A provider that cannot be
+	// built is a configuration error, and it should read as one at startup
+	// rather than as a failed task six steps into the first run.
+	client, err := llm.Resolve(cfg.Provider, cfg.BaseURL, cfg.APIKey, cfg.Model)
+	if err != nil {
+		log.Fatalf("provider: %v", err)
 	}
 
 	// The database driver will not create the directory holding its file, and
@@ -46,6 +51,13 @@ func main() {
 	log.Printf("database %s\n", cfg.DatabasePath)
 	log.Printf("workspaces %s\n", cfg.OutputDir)
 
+	// Write the resolved settings back, so everything downstream reports what is
+	// actually in force rather than what was typed. A preset supplies the model
+	// when the operator names none, and the picker's "default" has to agree with
+	// the model the loop will really use.
+	cfg.Provider, cfg.Model, cfg.BaseURL = client.Provider.Name, client.Model, client.BaseURL
+	log.Printf("provider %s (%s) model %s\n", cfg.Provider, cfg.BaseURL, cfg.Model)
+
 	s, err := store.NewStore(cfg.DatabasePath)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
@@ -59,7 +71,6 @@ func main() {
 		log.Printf("reclaimed %d task(s) left running by an earlier process\n", n)
 	}
 
-	client := llm.NewClient(cfg.OpenRouterKey, cfg.OpenRouterModel, cfg.BaseURL)
 	loop := agent.NewLoop(s, client, cfg.OutputDir)
 	loop.SetMaxParallel(cfg.MaxParallel)
 	loop.SetMaxSteps(cfg.MaxSteps)

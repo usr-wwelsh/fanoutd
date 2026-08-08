@@ -86,7 +86,7 @@ func breakdownLoop(t *testing.T, replies ...string) (*Loop, *store.Store, *fakeB
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	client := llm.NewClient("test-key", "test-model", srv.URL)
+	client := llm.NewClient(llm.Preset{Name: "test"}, "test-key", "test-model", srv.URL)
 	return NewLoop(s, client, filepath.Join(dir, "output")), s, f
 }
 

@@ -116,7 +116,7 @@ func consumeStream(body *bufio.Scanner, touch func()) (*Result, error) {
 			continue
 		}
 		if chunk.Error != nil && chunk.Error.Message != "" {
-			return nil, fmt.Errorf("openrouter stream error: %s", chunk.Error.Message)
+			return nil, fmt.Errorf("provider stream error: %s", chunk.Error.Message)
 		}
 		if len(chunk.Choices) == 0 {
 			continue

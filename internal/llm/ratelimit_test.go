@@ -131,7 +131,7 @@ func TestChatWaitsOutARateLimit(t *testing.T) {
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
-	c := NewClient("k", "m", srv.URL)
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
 	res, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -163,7 +163,7 @@ func TestRateLimitResetIsReadFromTheHeaderToo(t *testing.T) {
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
-	c := NewClient("k", "m", srv.URL)
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
 	if _, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestUnhintedRateLimitBacksOffExponentially(t *testing.T) {
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
-	c := NewClient("k", "m", srv.URL)
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
 	if _, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{}); err == nil {
 		t.Fatal("a permanent rate limit returned success")
 	}
@@ -211,7 +211,7 @@ func TestChatGivesUpOnAPermanentRateLimit(t *testing.T) {
 	srv := httptest.NewServer(lim)
 	defer srv.Close()
 
-	c := NewClient("k", "m", srv.URL)
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
 	_, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
 	if err == nil {
 		t.Fatal("a permanent rate limit returned success")
@@ -231,7 +231,7 @@ func TestRateLimitWaitHonoursCancellation(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	c := NewClient("k", "m", srv.URL)
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
 
 	done := make(chan error, 1)
 	go func() {

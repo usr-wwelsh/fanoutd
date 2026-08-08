@@ -10,13 +10,19 @@ import (
 )
 
 type Config struct {
-	Port            int
-	OpenRouterKey   string
-	OpenRouterModel string
-	DataDir         string
-	DatabasePath    string
-	OutputDir       string
-	BaseURL         string
+	Port int
+	// Provider names which endpoint to talk to — a preset in internal/llm, or
+	// "custom" with an explicit BaseURL. Everything else about a vendor is that
+	// one row, because they all speak the same wire protocol.
+	Provider string
+	APIKey   string
+	Model    string
+	// BaseURL overrides the provider's published endpoint. It is what points
+	// fanoutd at a local server on a port the presets do not guess.
+	BaseURL      string
+	DataDir      string
+	DatabasePath string
+	OutputDir    string
 	// MaxParallel caps how many subtasks of one breakdown run at once.
 	MaxParallel int
 	// MaxSteps bounds one agent run. Zero leaves the agent's own default, which
@@ -66,16 +72,25 @@ func Load() Config {
 		return fileVals[key]
 	}
 
-	cfg := Config{
-		OpenRouterKey:   get("OPENROUTER_API_KEY"),
-		OpenRouterModel: "inclusionai/ling-3.0-flash:free",
-		BaseURL:         get("OPENROUTER_BASE_URL"),
-		Token:           get("FANOUT_TOKEN"),
-		Port:            8080,
-		EnvFile:         envFile,
+	// The OPENROUTER_* names are the originals, from when there was only one
+	// provider. They still work and mean the same thing, so an existing env file
+	// keeps working untouched; the FANOUT_* names are what the settings describe
+	// now that the endpoint is a choice.
+	either := func(preferred, legacy string) string {
+		if v := get(preferred); v != "" {
+			return v
+		}
+		return get(legacy)
 	}
-	if v := get("OPENROUTER_MODEL"); v != "" {
-		cfg.OpenRouterModel = v
+
+	cfg := Config{
+		Provider: get("FANOUT_PROVIDER"),
+		APIKey:   either("FANOUT_API_KEY", "OPENROUTER_API_KEY"),
+		Model:    either("FANOUT_MODEL", "OPENROUTER_MODEL"),
+		BaseURL:  either("FANOUT_BASE_URL", "OPENROUTER_BASE_URL"),
+		Token:    get("FANOUT_TOKEN"),
+		Port:     8080,
+		EnvFile:  envFile,
 	}
 	if p, err := strconv.Atoi(get("PORT")); err == nil && p > 0 {
 		cfg.Port = p

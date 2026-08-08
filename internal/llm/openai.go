@@ -20,9 +20,10 @@ import (
 // almost every provider is reached through — vendors and local servers alike —
 // so its base URL and key are what a provider record configures, not code.
 type Client struct {
-	APIKey  string
-	Model   string
-	BaseURL string
+	Provider Preset
+	APIKey   string
+	Model    string
+	BaseURL  string
 
 	mu sync.Mutex
 	// noJSONMode records the models whose provider rejected response_format, so
@@ -48,18 +49,39 @@ type chatRequest struct {
 	Stream         bool            `json:"stream"`
 }
 
-func NewClient(apiKey, model, baseURL string) *Client {
-	if model == "" {
-		model = "inclusionai/ling-3.0-flash:free"
-	}
-	if baseURL == "" {
-		baseURL = "https://llm.ai/api/v1"
-	}
+// NewClient points the wire protocol at one provider. Resolve is the way in
+// from configuration; this is for callers that already know all four, which in
+// practice means tests naming a local test server.
+func NewClient(provider Preset, apiKey, model, baseURL string) *Client {
 	return &Client{
+		Provider:   provider,
 		APIKey:     apiKey,
 		Model:      model,
 		BaseURL:    strings.TrimSuffix(baseURL, "/"),
 		noJSONMode: map[string]bool{},
+	}
+}
+
+// name is what this provider is called in an error. A client built without a
+// preset still has to say something, and the endpoint is more use than "".
+func (c *Client) name() string {
+	if c.Provider.Name != "" {
+		return c.Provider.Name
+	}
+	return c.BaseURL
+}
+
+// authorize sets the credential, and the attribution headers OpenRouter ranks
+// apps by. An empty key sends no Authorization at all rather than an empty
+// bearer: a local server is entitled to read that as anonymous, and several
+// reject a malformed one outright.
+func (c *Client) authorize(req *http.Request) {
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	if c.Provider.Name == "openrouter" {
+		req.Header.Set("HTTP-Referer", "fanoutd")
+		req.Header.Set("X-Title", "fanoutd")
 	}
 }
 
@@ -152,7 +174,7 @@ func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
 			return got.result, nil
 		}
 		if got.status != http.StatusTooManyRequests {
-			return nil, fmt.Errorf("openrouter error %d: %s", got.status, got.body)
+			return nil, fmt.Errorf("%s error %d: %s", c.name(), got.status, got.body)
 		}
 		if attempt >= rateLimitRetries {
 			// Say plainly that waiting was tried, so the trace does not read as a
@@ -283,9 +305,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (attemptResult, error
 	if err != nil {
 		return attemptResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	req.Header.Set("HTTP-Referer", "fanoutd")
-	req.Header.Set("X-Title", "fanoutd")
+	c.authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -370,7 +390,7 @@ func (c *Client) send(ctx context.Context, messages []MsgBlock, opts ChatOptions
 		return nil, err
 	}
 	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return nil, fmt.Errorf("no content returned from openrouter")
+		return nil, fmt.Errorf("no content returned from %s", c.name())
 	}
 	return result, nil
 }

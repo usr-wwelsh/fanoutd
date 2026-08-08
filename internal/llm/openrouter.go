@@ -85,9 +85,7 @@ func (c *Client) fetchModels(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	req.Header.Set("HTTP-Referer", "fanoutd")
-	req.Header.Set("X-Title", "fanoutd")
+	c.authorize(req)
 
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
@@ -100,7 +98,7 @@ func (c *Client) fetchModels(ctx context.Context) ([]Model, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openrouter models error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s models error %d: %s", c.name(), resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed modelsResponse

@@ -1,6 +1,6 @@
 # fanoutd
 
-Multi-agent orchestrator with OpenRouter integration and a kanban board for task management.
+Multi-agent orchestrator with a kanban board, driven by any OpenAI-compatible model provider — hosted or local.
 
 Two binaries in one module:
 
@@ -20,7 +20,7 @@ runs only when you press **Start Agent**.
 
 1. **Ideas** — Create tasks with a goal.
 2. **To-Do** — Where a task lands when you start it. The agent plans step by step
-   via OpenRouter, writes files into its workspace, and records a full trace.
+   via the configured provider, writes files into its workspace, and records a full trace.
 3. **Review** — Only with `FANOUT_REVIEW=1`. Where a finished run waits for a
    second agent to check it. Nothing is ever filed here with review off.
 4. **Finished** — Where a task lands when the agent reports the goal met, with a
@@ -146,7 +146,7 @@ unprivileged user namespace can be missing or blocked. If the probe fails,
 `run_command` is never advertised. There is no unsandboxed fallback.
 
 Inside the jail: no network, nothing writable but the workspace and `/build`,
-`--clearenv` so `OPENROUTER_API_KEY` is never in scope, resource limits from a
+`--clearenv` so `FANOUT_API_KEY` is never in scope, resource limits from a
 transient systemd user scope, a wall-clock timeout that starts after a command
 acquires a slot, and output capped head-and-tail since results are replayed into
 the prompt.
@@ -256,7 +256,7 @@ rather than judging it.
 ```bash
 go mod download
 bun install --cwd frontend
-export OPENROUTER_API_KEY=sk-or-v1-...
+export FANOUT_API_KEY=sk-or-v1-...
 ```
 
 Development, in two terminals — or `./run.sh` for both:
@@ -282,8 +282,10 @@ is a separate ~6 MB binary that belongs on whatever machine you type from.
 
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
-| `OPENROUTER_API_KEY` | *(required)* | OpenRouter API key |
-| `OPENROUTER_MODEL` | `inclusionai/ling-3.0-flash:free` | LLM model |
+| `FANOUT_PROVIDER` | `openrouter` | Which endpoint to talk to — see below |
+| `FANOUT_API_KEY` | *(required)* | Key for that provider; local ones need none |
+| `FANOUT_MODEL` | *(the provider's, if it has one)* | Model id |
+| `FANOUT_BASE_URL` | *(the provider's)* | Override the endpoint |
 | `PORT` | `8080` | API server port |
 | `FANOUT_TOKEN` | *(empty)* | Gates the API. Empty leaves the server open |
 | `FANOUT_MAX_PARALLEL` | `3` | Concurrent subtasks within one breakdown |
@@ -294,7 +296,9 @@ is a separate ~6 MB binary that belongs on whatever machine you type from.
 | `FANOUT_REVIEW` | `0` | Send finished runs to a reviewing agent before Finished |
 | `FANOUT_REVIEW_MODEL` | *(the task's own)* | Model the reviewer runs on; pick a different one |
 | `FANOUT_ENV_FILE` | *(below)* | Override the settings file location |
-| `OPENROUTER_BASE_URL` | OpenRouter | Override the API base URL (testing) |
+
+The `OPENROUTER_*` names predate there being a choice, and still work: an
+existing env file needs no edit.
 
 Nothing resolves against the working directory, so the server behaves identically
 started from the repo, a systemd unit, or `/`. Settings are read from the first
@@ -302,6 +306,35 @@ file that exists: `FANOUT_ENV_FILE`, then `./.env`, then
 `$XDG_CONFIG_HOME/fanoutd/env`; exported variables win over the file. Copy
 `.env.example` to `.env` to start, or install it at the XDG path for a deployed
 server.
+
+**Providers.** Every one of these speaks OpenAI `chat/completions`, which is why
+the list can be this long without a plugin system behind it — a provider is a
+base URL and a key, not an integration.
+
+| | |
+|---|---|
+| Hosted | `openrouter` · `openai` · `anthropic` · `gemini` · `groq` · `deepseek` · `mistral` · `xai` · `together` · `fireworks` · `cerebras` |
+| Local | `ollama` · `llamacpp` · `vllm` · `lmstudio` |
+| Anything else | `custom`, with `FANOUT_BASE_URL` |
+
+```bash
+FANOUT_PROVIDER=ollama FANOUT_MODEL=qwen3 go run ./cmd/fanoutd
+```
+
+Local providers need no key, carry their upstream default port, and are the only
+configuration that owes nobody a network — which, with `FANOUT_SHELL=1` and its
+jail, is a board that plans, writes, runs and reviews entirely on one machine.
+`FANOUT_BASE_URL` is what points any of them at a different host or port.
+
+A provider that cannot work is a startup error naming what is missing, not a run
+that discovers it six steps in and files the result as a failed task. Vendors
+without one obvious model require `FANOUT_MODEL`; only `openrouter` ships a
+default, because it has a free tier to default to.
+
+`anthropic` and `gemini` are reached through their OpenAI-compatible endpoints.
+Their native APIs shape tool calls differently and would be a second
+implementation of one Go interface — the seam is there, and nothing else in the
+codebase would notice.
 
 **Rate limits.** The default model is free, and the free tier is capped per minute
 across the whole key — which three concurrent subtasks reach easily. A 429 is

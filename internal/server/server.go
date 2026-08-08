@@ -661,7 +661,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"default": s.cfg.OpenRouterModel,
+		"default": s.cfg.Model,
 		"models":  list,
 	})
 }

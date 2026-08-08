@@ -112,14 +112,20 @@ func TestSandboxHasNoNetworkByDefault(t *testing.T) {
 }
 
 func TestSandboxClearsTheEnvironment(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "sk-secret-value")
+	// Both names for the key, since either can be the one that is set: the jail
+	// clears the environment wholesale rather than scrubbing a list, and this is
+	// what says so.
+	t.Setenv("OPENROUTER_API_KEY", "sk-legacy-secret")
+	t.Setenv("FANOUT_API_KEY", "sk-secret-value")
 	sb := testSandbox(t, SandboxConfig{})
 
 	// Anything the command can read ends up in the trace and from there in the
 	// next prompt, so the key must not be in scope at all.
 	out := run(t, sb, t.TempDir(), "env")
-	if strings.Contains(out, "sk-secret-value") || strings.Contains(out, "OPENROUTER") {
-		t.Fatalf("API key leaked into the sandbox: %q", out)
+	for _, leaked := range []string{"sk-secret-value", "sk-legacy-secret", "OPENROUTER", "FANOUT_API_KEY"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("%s leaked into the sandbox: %q", leaked, out)
+		}
 	}
 }
 

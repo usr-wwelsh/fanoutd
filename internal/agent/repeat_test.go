@@ -71,7 +71,7 @@ func scriptedLoop(t *testing.T, replies ...string) (*Loop, *store.Store) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	client := llm.NewClient("test-key", "test-model", srv.URL)
+	client := llm.NewClient(llm.Preset{Name: "test"}, "test-key", "test-model", srv.URL)
 	l := NewLoop(s, client, filepath.Join(dir, "output"))
 	stopEverything(t, l)
 	return l, s
