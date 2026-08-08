@@ -307,6 +307,32 @@ file that exists: `FANOUT_ENV_FILE`, then `./.env`, then
 `.env.example` to `.env` to start, or install it at the XDG path for a deployed
 server.
 
+### Editing them from the board
+
+The **⚙** button opens the same settings as a form. It writes the file above —
+comments, ordering and unrecognised keys all survive — and then makes the change
+true of the running process: the provider, the model, the limits, review, the
+shell, and the access token all take effect on the next request, with no restart.
+
+Four cannot be adopted by a process that is already running, because the listener
+is bound and the database and workspaces are open: `PORT`, `FANOUT_DATA_DIR`,
+`DATABASE_PATH` and `OUTPUT_DIR`. Those are saved, and the page says so until the
+restart happens.
+
+Two rules make this safe enough to expose on a board that may be reachable:
+
+- **Secrets go in and never come back out.** `FANOUT_API_KEY` and `FANOUT_TOKEN`
+  are never served — the page reports whether each is set, plus the last four
+  characters of the key so you can tell which one is loaded. Leaving a secret out
+  of a save leaves it alone; sending it empty clears it.
+- **Keys are an allowlist and values are checked per kind.** The file format has
+  no escaping, so a value carrying a newline would write a setting of its own. A
+  provider that will not resolve is refused before anything is written, so a
+  rejected form leaves the file and the running server exactly as they were.
+
+A setting exported into the environment still wins over the file, so the page
+marks those fields and says that saving them will not take.
+
 **Providers.** Every one of these speaks OpenAI `chat/completions`, which is why
 the list can be this long without a plugin system behind it — a provider is a
 base URL and a key, not an integration.
