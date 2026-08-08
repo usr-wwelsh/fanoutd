@@ -65,32 +65,53 @@ type Config struct {
 func Load() Config {
 	envFile, fileVals := loadEnvFile()
 
-	get := func(key string) string {
+	cfg := parse(func(key string) string {
 		if v := os.Getenv(key); v != "" {
 			return v
 		}
 		return fileVals[key]
-	}
+	})
+	cfg.EnvFile = envFile
+	return cfg
+}
 
+// FromValues builds a config from an explicit set of settings, with no
+// environment and no file behind it. It is how a proposed change is turned into
+// the config it would produce, so it can be validated before anything is
+// written — a provider that will not resolve should be a rejected form, not a
+// server that has already saved the settings that break it.
+func FromValues(vals map[string]string) Config {
+	return parse(func(key string) string { return vals[key] })
+}
+
+// parse turns one lookup function into a config. Load and FromValues differ only
+// in where the strings come from, and sharing this is what keeps a settings
+// change meaning the same thing as a restart with the same file.
+func parse(get func(string) string) Config {
 	// The OPENROUTER_* names are the originals, from when there was only one
 	// provider. They still work and mean the same thing, so an existing env file
 	// keeps working untouched; the FANOUT_* names are what the settings describe
-	// now that the endpoint is a choice.
-	either := func(preferred, legacy string) string {
+	// now that the endpoint is a choice. The table is in source.go, so the
+	// settings page reads a legacy value as in force rather than as missing.
+	either := func(preferred string) string {
 		if v := get(preferred); v != "" {
 			return v
 		}
-		return get(legacy)
+		for _, legacy := range LegacyNames(preferred) {
+			if v := get(legacy); v != "" {
+				return v
+			}
+		}
+		return ""
 	}
 
 	cfg := Config{
 		Provider: get("FANOUT_PROVIDER"),
-		APIKey:   either("FANOUT_API_KEY", "OPENROUTER_API_KEY"),
-		Model:    either("FANOUT_MODEL", "OPENROUTER_MODEL"),
-		BaseURL:  either("FANOUT_BASE_URL", "OPENROUTER_BASE_URL"),
+		APIKey:   either("FANOUT_API_KEY"),
+		Model:    either("FANOUT_MODEL"),
+		BaseURL:  either("FANOUT_BASE_URL"),
 		Token:    get("FANOUT_TOKEN"),
 		Port:     8080,
-		EnvFile:  envFile,
 	}
 	if p, err := strconv.Atoi(get("PORT")); err == nil && p > 0 {
 		cfg.Port = p
@@ -211,8 +232,14 @@ func envFilePath() string {
 }
 
 func loadEnvFile() (string, map[string]string) {
+	return readEnvFile(envFilePath())
+}
+
+// readEnvFile parses one settings file. It returns the path it actually read,
+// or "" when there was nothing to read, so a caller can tell "no file" from "a
+// file that set nothing".
+func readEnvFile(path string) (string, map[string]string) {
 	vals := map[string]string{}
-	path := envFilePath()
 	if path == "" {
 		return "", vals
 	}
