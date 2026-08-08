@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"fanoutd/internal/models"
 	"fanoutd/internal/llm"
+	"fanoutd/internal/models"
 	"fanoutd/internal/store"
 )
 

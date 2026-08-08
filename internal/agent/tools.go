@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"fanoutd/internal/models"
 	"fanoutd/internal/llm"
+	"fanoutd/internal/models"
 )
 
 // readPageBytes is one read_file page. It stays under the tool-result budget in

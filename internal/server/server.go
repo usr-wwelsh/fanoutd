@@ -18,8 +18,8 @@ import (
 
 	"fanoutd/internal/agent"
 	"fanoutd/internal/config"
-	"fanoutd/internal/models"
 	"fanoutd/internal/llm"
+	"fanoutd/internal/models"
 	"fanoutd/internal/store"
 )
 
