@@ -22,7 +22,7 @@ var publicPaths = map[string]bool{
 	"/api/auth/login": true,
 }
 
-func (s *Server) authEnabled() bool { return s.cfg.Token != "" }
+func (s *Server) authEnabled() bool { return s.config().Token != "" }
 
 // gated marks the paths a token is required for. Workspace output is served as
 // a site under /preview/, so it needs the same gate the API has - a page is no
@@ -61,7 +61,7 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) tokenMatches(candidate string) bool {
-	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.cfg.Token)) == 1
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.config().Token)) == 1
 }
 
 // handleAuth reports whether a token is needed and whether this caller already
@@ -112,7 +112,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
-		Value:    s.cfg.Token,
+		Value:    s.config().Token,
 		Path:     "/",
 		MaxAge:   cookieMaxAge,
 		HttpOnly: true,

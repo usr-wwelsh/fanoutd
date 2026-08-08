@@ -29,18 +29,35 @@ import (
 const breakdownBudget = 5 * time.Minute
 
 type Server struct {
-	store  *store.Store
-	loop   *agent.Loop
-	client llm.Catalog
-	cfg    config.Config
-	ui     fs.FS
+	store *store.Store
+	loop  *agent.Loop
+	ui    fs.FS
 
 	mu   sync.Mutex
 	http *http.Server
+	// client and cfg are behind the mutex because the settings endpoint
+	// replaces them while requests are in flight. Everything that reads them
+	// goes through catalog() and config().
+	client llm.Catalog
+	cfg    config.Config
 }
 
 func New(s *store.Store, l *agent.Loop, c llm.Catalog, cfg config.Config, ui fs.FS) *Server {
 	return &Server{store: s, loop: l, client: c, cfg: cfg, ui: ui}
+}
+
+// config is the settings the running server is actually using, which is not
+// always what the settings file says: a port change is saved and waits.
+func (s *Server) config() config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
+func (s *Server) catalog() llm.Catalog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
 }
 
 // handler builds the routed, gated handler the server listens with. It is
@@ -54,6 +71,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/auth/", s.handleAuthRoute)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/tasks", s.handleTasksList)
 	mux.HandleFunc("/api/tasks/", s.handleTaskRoute)
@@ -121,11 +139,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // the operator is paying for.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	cfg := s.config()
 	json.NewEncoder(w).Encode(map[string]any{
-		"review": s.cfg.Review,
+		"review": cfg.Review,
 		// Empty means the reviewer runs on whatever each task used, which is the
 		// weak setting and is worth saying out loud where it is switched on.
-		"review_model": s.cfg.ReviewModel,
+		"review_model": cfg.ReviewModel,
 		// From the loop rather than the config, so a sandbox that would not start
 		// reads as off here too. A reviewer with a shell can run what it is
 		// judging, which is the difference between checking work and reading it.
@@ -654,7 +673,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	list, err := s.client.ListModels(r.Context())
+	list, err := s.catalog().ListModels(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
