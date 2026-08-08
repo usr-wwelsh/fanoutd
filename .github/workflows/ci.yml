@@ -35,6 +35,17 @@ jobs:
           fi
           bwrap --unshare-all --ro-bind / / /bin/true && echo "bwrap builds a jail"
 
+      # gofmt drifted unnoticed once already, and ten permanently-dirty files
+      # hide the eleventh. Fail here so the alarm stays worth listening to.
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...
 
