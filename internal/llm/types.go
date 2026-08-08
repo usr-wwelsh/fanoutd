@@ -21,10 +21,41 @@ type API interface {
 // with bare ids and no context length, tool support, or pricing, and a provider
 // that has nothing to say should say nothing rather than guess.
 type Catalog interface {
-	ListModels(ctx context.Context) ([]Model, error)
+	ListModels(ctx context.Context) (ModelList, error)
+}
+
+// CatalogKind says how much a provider's model list is worth, which is the
+// difference between a picker that can rank models and one that must let the
+// operator type an id. Reporting it is the honest alternative to filling the
+// missing fields with zeroes, which read as "no model here supports tools".
+type CatalogKind string
+
+const (
+	// CatalogRich carries pricing, context length and per-model parameter
+	// support. OpenRouter is the only provider that publishes all three.
+	CatalogRich CatalogKind = "rich"
+	// CatalogBare is ids and nothing else, which is what the OpenAI /models
+	// schema actually specifies and what almost everyone returns.
+	CatalogBare CatalogKind = "bare"
+	// CatalogNone is no usable list at all: the endpoint is absent, refused, or
+	// unreachable. Not an error — a local server is entitled not to have one,
+	// and the picker falls back to a text field.
+	CatalogNone CatalogKind = "none"
+)
+
+// ModelList is a catalog and what it is worth, together, because a caller that
+// gets one without the other will read too much into it.
+type ModelList struct {
+	Provider string      `json:"provider"`
+	Kind     CatalogKind `json:"kind"`
+	Models   []Model     `json:"models"`
+	// Default is the model a task with none of its own will run on.
+	Default string `json:"default"`
 }
 
 // Model is one entry of a provider's catalog, trimmed to what the picker needs.
+// Free, ContextLength and Tools are meaningful only when the list is
+// CatalogRich; on a bare catalog they are unset because nobody said.
 type Model struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`

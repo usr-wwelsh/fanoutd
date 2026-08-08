@@ -476,6 +476,16 @@ func cmdModels(e *env, args []string) error {
 	if *asJSON {
 		return writeJSON(e.out, list)
 	}
+	// A provider with no catalog has nothing to tabulate, and an empty table
+	// reads as a broken server rather than as one doing what it said.
+	if list.Kind == "none" {
+		fmt.Fprintf(e.out, "%s publishes no model list — pass any id it accepts to --model\n", list.Provider)
+		if list.Default != "" {
+			fmt.Fprintf(e.out, "default %s\n", list.Default)
+		}
+		return nil
+	}
+
 	rows := make([][]string, 0, len(list.Models))
 	for _, m := range list.Models {
 		marker := " "
@@ -485,5 +495,8 @@ func cmdModels(e *env, args []string) error {
 		rows = append(rows, []string{marker, m.ID, clip(m.Name, 48)})
 	}
 	table(e.out, rows)
+	if list.Kind == "bare" {
+		fmt.Fprintf(e.out, "\n%s lists ids only — context length and tool support unknown\n", list.Provider)
+	}
 	return nil
 }

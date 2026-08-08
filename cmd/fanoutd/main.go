@@ -51,12 +51,7 @@ func main() {
 	log.Printf("database %s\n", cfg.DatabasePath)
 	log.Printf("workspaces %s\n", cfg.OutputDir)
 
-	// Write the resolved settings back, so everything downstream reports what is
-	// actually in force rather than what was typed. A preset supplies the model
-	// when the operator names none, and the picker's "default" has to agree with
-	// the model the loop will really use.
-	cfg.Provider, cfg.Model, cfg.BaseURL = client.Provider.Name, client.Model, client.BaseURL
-	log.Printf("provider %s (%s) model %s\n", cfg.Provider, cfg.BaseURL, cfg.Model)
+	log.Printf("provider %s (%s) model %s\n", client.Provider.Name, client.BaseURL, client.Model)
 
 	s, err := store.NewStore(cfg.DatabasePath)
 	if err != nil {

@@ -309,8 +309,13 @@ func (c *Client) group(ctx context.Context, method, groupID, action string) (*mo
 // Models lists what the server will accept for --model, and which one it uses
 // by default.
 type Models struct {
-	Default string `json:"default"`
-	Models  []struct {
+	Default  string `json:"default"`
+	Provider string `json:"provider"`
+	// Kind is how much the list is worth: "rich" carries pricing and tool
+	// support, "bare" is ids only, "none" means the provider publishes no
+	// catalog and the id is the operator's to supply.
+	Kind   string `json:"kind"`
+	Models []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"models"`

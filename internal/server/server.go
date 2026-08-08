@@ -660,10 +660,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"default": s.cfg.Model,
-		"models":  list,
-	})
+	json.NewEncoder(w).Encode(list)
 }
 
 // handleBreakdown splits one idea into a group of subtasks. It blocks on the

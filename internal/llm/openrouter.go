@@ -49,15 +49,20 @@ var familyRank = []string{
 	"gemma",
 }
 
-// ListModels returns the catalog, free models first and best-ranked first within
-// each tier.
-func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
+// ListModels returns the catalog and how much of it to believe. On a rich
+// catalog that is free models first and best-ranked first within each tier; on
+// a bare one it is ids in alphabetical order, since nothing in the response
+// supports any other claim.
+func (c *Client) ListModels(ctx context.Context) (ModelList, error) {
+	out := ModelList{Provider: c.name(), Kind: c.catalogKind(), Default: c.Model}
+
 	c.mu.Lock()
 	fresh := time.Since(c.modelsAt) < modelsTTL
 	cached, cachedErr := c.models, c.modelsError
 	c.mu.Unlock()
 	if fresh && cachedErr == nil && cached != nil {
-		return cached, nil
+		out.Models = cached
+		return out, nil
 	}
 
 	list, err := c.fetchModels(ctx)
@@ -73,11 +78,32 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		// A stale catalog beats an empty picker.
 		if cached != nil {
-			return cached, nil
+			out.Models = cached
+			return out, nil
 		}
-		return nil, err
+		// A provider that publishes a real catalog failing to serve it is a
+		// fault worth showing. A provider that was only ever going to return
+		// ids is not: plenty of local servers implement no /models at all, and
+		// an error there would break a picker that has a perfectly good
+		// fallback in letting the operator type the id.
+		if out.Kind == CatalogRich {
+			return out, err
+		}
+		out.Kind = CatalogNone
+		return out, nil
 	}
-	return list, nil
+	out.Models = list
+	return out, nil
+}
+
+// catalogKind is what this provider's list is worth. An unset preset means a
+// client built by hand — a test, or a custom endpoint — and bare is the
+// assumption that claims least.
+func (c *Client) catalogKind() CatalogKind {
+	if c.Provider.Catalog == "" {
+		return CatalogBare
+	}
+	return c.Provider.Catalog
 }
 
 func (c *Client) fetchModels(ctx context.Context) ([]Model, error) {
@@ -106,6 +132,12 @@ func (c *Client) fetchModels(ctx context.Context) ([]Model, error) {
 		return nil, err
 	}
 
+	// The rich fields are read only where the provider publishes them. Parsing
+	// them off a bare response would not fail — they are simply absent — and
+	// every model would come back priced at nothing and unable to call tools,
+	// which is worse than admitting the list says neither.
+	rich := c.catalogKind() == CatalogRich
+
 	out := make([]Model, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
 		if m.ID == "" {
@@ -115,16 +147,20 @@ func (c *Client) fetchModels(ctx context.Context) ([]Model, error) {
 		if name == "" {
 			name = m.ID
 		}
-		out = append(out, Model{
-			ID:            m.ID,
-			Name:          name,
-			ContextLength: m.ContextLength,
-			Free:          isZeroPrice(m.Pricing.Prompt) && isZeroPrice(m.Pricing.Completion),
-			Tools:         contains(m.SupportedParameters, "tools"),
-		})
+		entry := Model{ID: m.ID, Name: name}
+		if rich {
+			entry.ContextLength = m.ContextLength
+			entry.Free = isZeroPrice(m.Pricing.Prompt) && isZeroPrice(m.Pricing.Completion)
+			entry.Tools = contains(m.SupportedParameters, "tools")
+		}
+		out = append(out, entry)
 	}
 
-	sortModels(out)
+	if rich {
+		sortModels(out)
+	} else {
+		sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	}
 	return out, nil
 }
 

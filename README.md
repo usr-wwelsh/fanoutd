@@ -331,6 +331,17 @@ that discovers it six steps in and files the result as a failed task. Vendors
 without one obvious model require `FANOUT_MODEL`; only `openrouter` ships a
 default, because it has a free tier to default to.
 
+**The model picker degrades with the provider.** OpenRouter publishes pricing,
+context length and per-model parameter support, so the picker groups free from
+paid and marks which models call tools. The OpenAI `/models` schema specifies
+none of that, and almost nobody adds it: everyone else returns ids. So the
+response says which kind of catalog it is, and the picker shows a plain list —
+or a text field, for a local server that implements no `/models` at all.
+
+The alternative was reading the missing fields off a bare response anyway, where
+they parse cleanly as zero and mean every model is free and none of them can
+call tools. Both false. `fanout models` says the same thing in one line.
+
 `anthropic` and `gemini` are reached through their OpenAI-compatible endpoints.
 Their native APIs shape tool calls differently and would be a second
 implementation of one Go interface — the seam is there, and nothing else in the

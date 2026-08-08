@@ -16,6 +16,9 @@ import (
 type Preset struct {
 	Name    string
 	BaseURL string
+	// Catalog is how much this provider's /models endpoint says. Unset means
+	// CatalogBare, which is the OpenAI schema and so the safe assumption.
+	Catalog CatalogKind
 	// KeyOptional marks an endpoint that authenticates nothing, which is the
 	// normal case for a server on localhost. A key is still sent if one is set,
 	// since a local server sitting behind a proxy may want it.
@@ -31,6 +34,7 @@ var presets = map[string]Preset{
 	"openrouter": {
 		Name:    "openrouter",
 		BaseURL: "https://openrouter.ai/api/v1",
+		Catalog: CatalogRich,
 		// The one default worth keeping: it is free, it calls tools, and it is
 		// what every existing install is already pointed at.
 		DefaultModel: "inclusionai/ling-3.0-flash:free",
