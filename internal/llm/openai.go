@@ -1,4 +1,4 @@
-package openrouter
+package llm
 
 import (
 	"bufio"
@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// Client speaks OpenAI chat/completions over SSE. It is the implementation
+// almost every provider is reached through — vendors and local servers alike —
+// so its base URL and key are what a provider record configures, not code.
 type Client struct {
 	APIKey  string
 	Model   string
@@ -31,58 +34,7 @@ type Client struct {
 	modelsError error
 }
 
-type MsgBlock struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	// ToolCallID and Name belong to a role:"tool" message, and name the call it
-	// answers. A tool result delivered without them is just another user turn,
-	// which is what the model reads it as.
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	Name       string `json:"name,omitempty"`
-}
-
-// ToolCall is a native tool call returned by the model.
-type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
-}
-
-type FunctionCall struct {
-	Name string `json:"name"`
-	// Arguments is a JSON object encoded as a string, per the OpenAI schema.
-	Arguments string `json:"arguments"`
-}
-
-// Tool advertises a callable function to the model.
-type Tool struct {
-	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
-}
-
-type ToolFunction struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Parameters  any    `json:"parameters"`
-}
-
-// Result is one model turn: free text, native tool calls, or both.
-type Result struct {
-	Content   string
-	ToolCalls []ToolCall
-}
-
-// ChatOptions selects how the model should shape its reply. Tools and ForceJSON
-// are mutually exclusive: several providers suppress tool calls when a JSON
-// response format is set, so ForceJSON is meant as a fallback, not an addition.
-type ChatOptions struct {
-	Tools []Tool
-	// ForceJSON constrains the reply to a single JSON object via response_format.
-	ForceJSON bool
-	// Model overrides the client default for this request. Empty uses the default.
-	Model string
-}
+var _ API = (*Client)(nil)
 
 type responseFormat struct {
 	Type string `json:"type"`
@@ -101,7 +53,7 @@ func NewClient(apiKey, model, baseURL string) *Client {
 		model = "inclusionai/ling-3.0-flash:free"
 	}
 	if baseURL == "" {
-		baseURL = "https://openrouter.ai/api/v1"
+		baseURL = "https://llm.ai/api/v1"
 	}
 	return &Client{
 		APIKey:     apiKey,

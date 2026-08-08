@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -140,7 +140,7 @@ ones. Re-running a command you have already run, unchanged, is not progress.`
 
 type Loop struct {
 	store   *store.Store
-	client  *openrouter.Client
+	client  llm.API
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	// groups tracks running breakdown schedules, so one can be stopped as a
@@ -178,7 +178,7 @@ func (l *Loop) Sandboxed() bool {
 	return l.sandbox != nil
 }
 
-func NewLoop(s *store.Store, c *openrouter.Client, outputDir string) *Loop {
+func NewLoop(s *store.Store, c llm.API, outputDir string) *Loop {
 	return &Loop{
 		store:       s,
 		client:      c,
@@ -556,9 +556,9 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 
 		// Native tool calls are the primary path; once the model has produced
 		// something unusable, retry under a forced JSON response format instead.
-		opts := openrouter.ChatOptions{Tools: ToolDefs(sandbox != nil), Model: task.Model}
+		opts := llm.ChatOptions{Tools: ToolDefs(sandbox != nil), Model: task.Model}
 		if parseFailures > 0 {
-			opts = openrouter.ChatOptions{ForceJSON: true, Model: task.Model}
+			opts = llm.ChatOptions{ForceJSON: true, Model: task.Model}
 		}
 
 		resp, err := l.client.Chat(ctx, messages, opts)
@@ -795,7 +795,7 @@ func stopped(ctx context.Context) bool {
 	return ctx.Err() != nil
 }
 
-func buildMessages(task *models.Task, workspace string, existing []FileEntry, trace []models.TraceStep, sandboxed bool) []openrouter.MsgBlock {
+func buildMessages(task *models.Task, workspace string, existing []FileEntry, trace []models.TraceStep, sandboxed bool) []llm.MsgBlock {
 	var intro strings.Builder
 	fmt.Fprintf(&intro, "Task goal: %s\n", task.Goal)
 	if task.Description != "" {
@@ -825,7 +825,7 @@ func buildMessages(task *models.Task, workspace string, existing []FileEntry, tr
 		system += shellPrompt
 	}
 
-	msgs := []openrouter.MsgBlock{
+	msgs := []llm.MsgBlock{
 		{Role: "system", Content: system},
 		{Role: "user", Content: intro.String()},
 	}
@@ -850,8 +850,8 @@ func authorSteps(trace []models.TraceStep) []models.TraceStep {
 // replayTrace renders the trace under transcriptBudget. It walks backwards, so
 // the budget is spent on the steps nearest the decision the model is about to
 // make, and everything older is condensed.
-func replayTrace(trace []models.TraceStep) []openrouter.MsgBlock {
-	byStep := make([][]openrouter.MsgBlock, len(trace))
+func replayTrace(trace []models.TraceStep) []llm.MsgBlock {
+	byStep := make([][]llm.MsgBlock, len(trace))
 	used := 0
 	for i := len(trace) - 1; i >= 0; i-- {
 		full := used < transcriptBudget || len(trace)-i <= minFullSteps
@@ -859,7 +859,7 @@ func replayTrace(trace []models.TraceStep) []openrouter.MsgBlock {
 		used += blocksSize(byStep[i])
 	}
 
-	msgs := []openrouter.MsgBlock{}
+	msgs := []llm.MsgBlock{}
 	for _, blocks := range byStep {
 		msgs = append(msgs, blocks...)
 	}
@@ -869,7 +869,7 @@ func replayTrace(trace []models.TraceStep) []openrouter.MsgBlock {
 // replayStep renders one trace step. A condensed step keeps its shape and loses
 // its bulk: the same messages in the same order, so no assistant turn is left
 // holding a tool call whose result went missing.
-func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
+func replayStep(ts models.TraceStep, full bool) []llm.MsgBlock {
 	// A step that made real tool calls replays as the exchange it was: the
 	// assistant turn carrying those calls, then one "tool" message per call.
 	// This is the shape models are trained on, and it is the only shape in
@@ -877,13 +877,13 @@ func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
 	// that wrote a file has no record of what it put in it and re-reads the
 	// file to find out, which is the loop the repeat guard then aborts.
 	if replayable(ts) {
-		msgs := []openrouter.MsgBlock{assistantTurn(ts, full)}
+		msgs := []llm.MsgBlock{assistantTurn(ts, full)}
 		for _, c := range ts.Calls {
 			content := truncate(c.Result, toolResultBudget)
 			if !full {
 				content = digest(c.Result)
 			}
-			msgs = append(msgs, openrouter.MsgBlock{
+			msgs = append(msgs, llm.MsgBlock{
 				Role:       "tool",
 				ToolCallID: c.ID,
 				Name:       c.Name,
@@ -893,7 +893,7 @@ func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
 		return msgs
 	}
 
-	msgs := []openrouter.MsgBlock{}
+	msgs := []llm.MsgBlock{}
 	if ts.Response != "" {
 		content := ts.Response
 		// Replaying a malformed reply in full invites the model to repeat it.
@@ -903,7 +903,7 @@ func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
 		if !full {
 			content = digest(content)
 		}
-		msgs = append(msgs, openrouter.MsgBlock{Role: "assistant", Content: content})
+		msgs = append(msgs, llm.MsgBlock{Role: "assistant", Content: content})
 	}
 
 	result := truncate(ts.ToolResult, toolResultBudget)
@@ -916,12 +916,12 @@ func replayStep(ts models.TraceStep, full bool) []openrouter.MsgBlock {
 	} else if ts.ToolResult != "" {
 		feedback = fmt.Sprintf("%s\n\nContinue. What is your next action?", result)
 	}
-	return append(msgs, openrouter.MsgBlock{Role: "user", Content: feedback})
+	return append(msgs, llm.MsgBlock{Role: "user", Content: feedback})
 }
 
 // blocksSize is what a step costs the transcript. Tool call arguments count:
 // a write_file's content sits in them, and they are most of a large step.
-func blocksSize(msgs []openrouter.MsgBlock) int {
+func blocksSize(msgs []llm.MsgBlock) int {
 	n := 0
 	for _, m := range msgs {
 		n += len(m.Content)
@@ -988,8 +988,8 @@ func replayable(ts models.TraceStep) bool {
 
 // assistantTurn rebuilds the turn that made a step's calls. Content is whatever
 // the model wrote alongside them, which is often nothing.
-func assistantTurn(ts models.TraceStep, full bool) openrouter.MsgBlock {
-	calls := make([]openrouter.ToolCall, 0, len(ts.Calls))
+func assistantTurn(ts models.TraceStep, full bool) llm.MsgBlock {
+	calls := make([]llm.ToolCall, 0, len(ts.Calls))
 	for _, c := range ts.Calls {
 		args := c.Arguments
 		if !full {
@@ -998,17 +998,17 @@ func assistantTurn(ts models.TraceStep, full bool) openrouter.MsgBlock {
 		if args == "" {
 			args = "{}"
 		}
-		calls = append(calls, openrouter.ToolCall{
+		calls = append(calls, llm.ToolCall{
 			ID:       c.ID,
 			Type:     "function",
-			Function: openrouter.FunctionCall{Name: c.Name, Arguments: args},
+			Function: llm.FunctionCall{Name: c.Name, Arguments: args},
 		})
 	}
 	content := ts.Response
 	if !full {
 		content = digest(content)
 	}
-	return openrouter.MsgBlock{Role: "assistant", Content: content, ToolCalls: calls}
+	return llm.MsgBlock{Role: "assistant", Content: content, ToolCalls: calls}
 }
 
 // pendingCall is one tool call the model asked for, with the identity the
@@ -1042,7 +1042,7 @@ type stepResult struct {
 
 // parseResponse prefers native tool calls and falls back to the JSON protocol
 // for models that ignore the tools parameter.
-func parseResponse(resp *openrouter.Result) (*stepResult, error) {
+func parseResponse(resp *llm.Result) (*stepResult, error) {
 	content := strings.TrimSpace(resp.Content)
 
 	if len(resp.ToolCalls) > 0 {

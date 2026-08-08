@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 )
 
 // readPageBytes is one read_file page. It stays under the tool-result budget in
@@ -60,13 +60,13 @@ func toolString(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
 }
 
-func toolDef(name, desc string, props map[string]any, required ...string) openrouter.Tool {
+func toolDef(name, desc string, props map[string]any, required ...string) llm.Tool {
 	if required == nil {
 		required = []string{}
 	}
-	return openrouter.Tool{
+	return llm.Tool{
 		Type: "function",
-		Function: openrouter.ToolFunction{
+		Function: llm.ToolFunction{
 			Name:        name,
 			Description: desc,
 			Parameters: map[string]any{
@@ -81,11 +81,11 @@ func toolDef(name, desc string, props map[string]any, required ...string) openro
 // ToolDefs advertises the workspace tools to the model in native form.
 // run_command appears only when a sandbox was built, so a host without working
 // bubblewrap never offers the model a tool it will refuse.
-func ToolDefs(sandboxed bool) []openrouter.Tool {
+func ToolDefs(sandboxed bool) []llm.Tool {
 	str, def := toolString, toolDef
 
 	path := str("Path relative to the workspace root.")
-	tools := []openrouter.Tool{
+	tools := []llm.Tool{
 		def("write_file", "Create or overwrite a file in the workspace. Use this for every deliverable - response text is not saved.",
 			map[string]any{"path": path, "content": str("Full file contents.")}, "path", "content"),
 		def("read_file", fmt.Sprintf("Read a file back from the workspace, up to %d bytes per call. If the result says bytes remain, call again with offset set to continue from there.", readPageBytes),
@@ -117,11 +117,11 @@ func ToolDefs(sandboxed bool) []openrouter.Tool {
 // ReviewToolDefs is the reviewer's half of the same set: everything needed to
 // inspect and execute the work, and nothing that changes it. A reviewer that can
 // edit the workspace stops being a second opinion and becomes a second author.
-func ReviewToolDefs(sandboxed bool) []openrouter.Tool {
+func ReviewToolDefs(sandboxed bool) []llm.Tool {
 	str, def := toolString, toolDef
 
 	path := str("Path relative to the workspace root.")
-	tools := []openrouter.Tool{
+	tools := []llm.Tool{
 		def("read_file", fmt.Sprintf("Read a file, up to %d bytes per call. If the result says bytes remain, call again with offset set to continue from there.", readPageBytes),
 			map[string]any{
 				"path":   path,
@@ -145,9 +145,9 @@ func ReviewToolDefs(sandboxed bool) []openrouter.Tool {
 // seen. Taking the reading tools away is the whole point of that turn: a model
 // offered one more read will take it, and the step after that is the one it does
 // not get.
-func VerdictToolDefs() []openrouter.Tool {
+func VerdictToolDefs() []llm.Tool {
 	str, def := toolString, toolDef
-	return []openrouter.Tool{
+	return []llm.Tool{
 		def(passTool, "Accept the work. Call this only once you have checked every criterion and each one holds.",
 			map[string]any{"summary": str("What you checked and how you checked it, criterion by criterion.")}, "summary"),
 		def(rejectTool, "Send the work back. Call this when any criterion does not hold.",

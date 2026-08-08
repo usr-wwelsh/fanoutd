@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -202,7 +202,7 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 // repair a bad one, with the fault named. The conversation carries the rejected
 // plan so the correction is an edit rather than a fresh guess.
 func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakdownPlan, error) {
-	messages := []openrouter.MsgBlock{
+	messages := []llm.MsgBlock{
 		{Role: "system", Content: breakdownPrompt},
 		{Role: "user", Content: "Idea: " + req.Idea + seedBrief(req.Seed) + "\n\nSplit it. Reply with the JSON object and nothing else."},
 	}
@@ -212,7 +212,7 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 		// No tools: this call wants one JSON object, which is the one thing
 		// response_format is for. The client falls back on its own for providers
 		// that reject it.
-		resp, err := l.client.Chat(ctx, messages, openrouter.ChatOptions{ForceJSON: true, Model: req.Model})
+		resp, err := l.client.Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: req.Model})
 		if err != nil {
 			// A transport failure is not a bad plan; re-asking would only repeat it.
 			return nil, fmt.Errorf("breakdown call failed: %w", err)
@@ -227,8 +227,8 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 		}
 		last = err
 		messages = append(messages,
-			openrouter.MsgBlock{Role: "assistant", Content: truncate(resp.Content, breakdownEcho)},
-			openrouter.MsgBlock{Role: "user", Content: replanPrompt(err)},
+			llm.MsgBlock{Role: "assistant", Content: truncate(resp.Content, breakdownEcho)},
+			llm.MsgBlock{Role: "user", Content: replanPrompt(err)},
 		)
 	}
 	return nil, last

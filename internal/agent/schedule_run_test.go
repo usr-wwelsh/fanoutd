@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -120,7 +120,7 @@ func scheduledLoop(t *testing.T, f *fakeModel) (*Loop, *store.Store) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	client := openrouter.NewClient("test-key", "test-model", srv.URL)
+	client := llm.NewClient("test-key", "test-model", srv.URL)
 	l := NewLoop(s, client, filepath.Join(dir, "output"))
 	stopEverything(t, l)
 	return l, s

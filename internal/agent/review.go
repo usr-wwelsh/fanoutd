@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -517,9 +517,9 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 			return
 		}
 
-		opts := openrouter.ChatOptions{Tools: ReviewToolDefs(sandbox != nil), Model: model}
+		opts := llm.ChatOptions{Tools: ReviewToolDefs(sandbox != nil), Model: model}
 		if parseFailures > 0 {
-			opts = openrouter.ChatOptions{ForceJSON: true, Model: model}
+			opts = llm.ChatOptions{ForceJSON: true, Model: model}
 		}
 
 		resp, err := l.client.Chat(ctx, messages, opts)
@@ -537,8 +537,8 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 			parseFailures++
 			l.store.AddTraceStep(t.anchor.ID, step, reviewPrefix+actionParseFailure, "", resp.Content, "", parseFailureFeedback(err))
 			messages = append(messages,
-				openrouter.MsgBlock{Role: "assistant", Content: truncate(resp.Content, 500)},
-				openrouter.MsgBlock{Role: "user", Content: parseFailureFeedback(err)},
+				llm.MsgBlock{Role: "assistant", Content: truncate(resp.Content, 500)},
+				llm.MsgBlock{Role: "user", Content: parseFailureFeedback(err)},
 			)
 			if parseFailures >= parseFailureLimit {
 				l.reviewFailed(t, step, fmt.Sprintf("the reviewer returned an unusable response %d times in a row", parseFailures))
@@ -622,13 +622,13 @@ starts where you stopped.`
 // open it to find that nothing was actually wrong except that the reviewer ran
 // long. A reviewer eight files into a ten-file workspace has an opinion; this
 // asks for it. Only a reviewer that will not answer even then is a failed one.
-func (l *Loop) decideNow(ctx context.Context, t reviewTarget, model string, messages []openrouter.MsgBlock, step int, why string) {
+func (l *Loop) decideNow(ctx context.Context, t reviewTarget, model string, messages []llm.MsgBlock, step int, why string) {
 	if stopped(ctx) {
 		return
 	}
-	messages = append(messages, openrouter.MsgBlock{Role: "user", Content: reviewDecidePrompt})
+	messages = append(messages, llm.MsgBlock{Role: "user", Content: reviewDecidePrompt})
 
-	resp, err := l.client.Chat(ctx, messages, openrouter.ChatOptions{Tools: VerdictToolDefs(), Model: model})
+	resp, err := l.client.Chat(ctx, messages, llm.ChatOptions{Tools: VerdictToolDefs(), Model: model})
 	if err != nil {
 		if stopped(ctx) {
 			return
@@ -801,7 +801,7 @@ func reworkContext(t reviewTarget) string {
 // reviewMessages is the reviewer's opening prompt. It is built from the
 // workspace and the criteria and never from the author's trace, which is the
 // whole point of running a second agent.
-func reviewMessages(t reviewTarget, workspace string, files []FileEntry, sandboxed bool) []openrouter.MsgBlock {
+func reviewMessages(t reviewTarget, workspace string, files []FileEntry, sandboxed bool) []llm.MsgBlock {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal the work was given: %s\n", strings.TrimSpace(t.goal))
 	fmt.Fprintf(&b, "Workspace directory: %s\n", workspace)
@@ -845,7 +845,7 @@ func reviewMessages(t reviewTarget, workspace string, files []FileEntry, sandbox
 	if sandboxed {
 		system += reviewShellPrompt
 	}
-	return []openrouter.MsgBlock{
+	return []llm.MsgBlock{
 		{Role: "system", Content: system},
 		{Role: "user", Content: b.String()},
 	}

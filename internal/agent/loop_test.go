@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 )
 
 // These cover the hand-rolled extraction of JSON from model output. It fails in
@@ -122,10 +122,10 @@ func TestExtractJSON(t *testing.T) {
 }
 
 func TestParseResponseNativeToolCall(t *testing.T) {
-	resp := &openrouter.Result{
+	resp := &llm.Result{
 		Content: "Writing the board renderer.",
-		ToolCalls: []openrouter.ToolCall{{
-			Function: openrouter.FunctionCall{
+		ToolCalls: []llm.ToolCall{{
+			Function: llm.FunctionCall{
 				Name:      "write_file",
 				Arguments: `{"path":"tetris.html","content":"<html>"}`,
 			},
@@ -144,9 +144,9 @@ func TestParseResponseNativeToolCall(t *testing.T) {
 }
 
 func TestParseResponseSynthesizesActionWhenSilent(t *testing.T) {
-	resp := &openrouter.Result{
-		ToolCalls: []openrouter.ToolCall{{
-			Function: openrouter.FunctionCall{Name: "READ_FILE", Arguments: `{"path":"spec.md"}`},
+	resp := &llm.Result{
+		ToolCalls: []llm.ToolCall{{
+			Function: llm.FunctionCall{Name: "READ_FILE", Arguments: `{"path":"spec.md"}`},
 		}},
 	}
 	got, err := parseResponse(resp)
@@ -169,9 +169,9 @@ func TestParseResponseSynthesizesActionWhenSilent(t *testing.T) {
 }
 
 func TestParseResponseFinishTool(t *testing.T) {
-	resp := &openrouter.Result{
-		ToolCalls: []openrouter.ToolCall{{
-			Function: openrouter.FunctionCall{Name: "finish", Arguments: `{"summary":"wrote tetris.html"}`},
+	resp := &llm.Result{
+		ToolCalls: []llm.ToolCall{{
+			Function: llm.FunctionCall{Name: "finish", Arguments: `{"summary":"wrote tetris.html"}`},
 		}},
 	}
 	got, err := parseResponse(resp)
@@ -189,10 +189,10 @@ func TestParseResponseFinishTool(t *testing.T) {
 // A model that writes its last file and signs off in the same turn must get
 // both: returning on the finish alone discards the write it was signing off on.
 func TestParseResponseFinishAlongsideWork(t *testing.T) {
-	resp := &openrouter.Result{
-		ToolCalls: []openrouter.ToolCall{
-			{ID: "c1", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"hi"}`}},
-			{ID: "c2", Function: openrouter.FunctionCall{Name: "finish", Arguments: `{"summary":"wrote a.md"}`}},
+	resp := &llm.Result{
+		ToolCalls: []llm.ToolCall{
+			{ID: "c1", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"hi"}`}},
+			{ID: "c2", Function: llm.FunctionCall{Name: "finish", Arguments: `{"summary":"wrote a.md"}`}},
 		},
 	}
 	got, err := parseResponse(resp)
@@ -210,11 +210,11 @@ func TestParseResponseFinishAlongsideWork(t *testing.T) {
 // Every call in a turn has to survive parsing, with the ids their results will
 // be keyed on.
 func TestParseResponseKeepsEveryToolCall(t *testing.T) {
-	resp := &openrouter.Result{
-		ToolCalls: []openrouter.ToolCall{
-			{ID: "c1", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"a"}`}},
-			{ID: "c2", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"b.md","content":"b"}`}},
-			{ID: "c3", Function: openrouter.FunctionCall{Name: "write_file", Arguments: `{"path":"c.md","content":"c"}`}},
+	resp := &llm.Result{
+		ToolCalls: []llm.ToolCall{
+			{ID: "c1", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"a.md","content":"a"}`}},
+			{ID: "c2", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"b.md","content":"b"}`}},
+			{ID: "c3", Function: llm.FunctionCall{Name: "write_file", Arguments: `{"path":"c.md","content":"c"}`}},
 		},
 	}
 	got, err := parseResponse(resp)
@@ -235,7 +235,7 @@ func TestParseResponseKeepsEveryToolCall(t *testing.T) {
 }
 
 func TestParseResponseJSONFallback(t *testing.T) {
-	resp := &openrouter.Result{
+	resp := &llm.Result{
 		Content: "```json\n{\"goal_met\":false,\"next_action\":\"write the page\",\"tool\":{\"name\":\"write_file\",\"path\":\"index.html\",\"content\":\"hi\"}}\n```",
 	}
 	got, err := parseResponse(resp)
@@ -257,16 +257,16 @@ func TestParseResponseJSONFallback(t *testing.T) {
 func TestParseResponseErrors(t *testing.T) {
 	tests := []struct {
 		name string
-		resp *openrouter.Result
+		resp *llm.Result
 	}{
-		{"prose only", &openrouter.Result{Content: "I'll write the file now."}},
-		{"tool call with no name", &openrouter.Result{
-			ToolCalls: []openrouter.ToolCall{{Function: openrouter.FunctionCall{Arguments: "{}"}}},
+		{"prose only", &llm.Result{Content: "I'll write the file now."}},
+		{"tool call with no name", &llm.Result{
+			ToolCalls: []llm.ToolCall{{Function: llm.FunctionCall{Arguments: "{}"}}},
 		}},
-		{"tool call with bad arguments", &openrouter.Result{
-			ToolCalls: []openrouter.ToolCall{{Function: openrouter.FunctionCall{Name: "write_file", Arguments: "path=a.txt"}}},
+		{"tool call with bad arguments", &llm.Result{
+			ToolCalls: []llm.ToolCall{{Function: llm.FunctionCall{Name: "write_file", Arguments: "path=a.txt"}}},
 		}},
-		{"xml tool call", &openrouter.Result{Content: "<tool_call>write_file</tool_call>"}},
+		{"xml tool call", &llm.Result{Content: "<tool_call>write_file</tool_call>"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,8 +279,8 @@ func TestParseResponseErrors(t *testing.T) {
 
 // A tool call with no arguments at all is legal for list_files, which takes none.
 func TestParseResponseToolCallWithoutArguments(t *testing.T) {
-	resp := &openrouter.Result{
-		ToolCalls: []openrouter.ToolCall{{Function: openrouter.FunctionCall{Name: "list_files"}}},
+	resp := &llm.Result{
+		ToolCalls: []llm.ToolCall{{Function: llm.FunctionCall{Name: "list_files"}}},
 	}
 	got, err := parseResponse(resp)
 	if err != nil {

@@ -19,7 +19,7 @@ import (
 	"fanoutd/internal/agent"
 	"fanoutd/internal/config"
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -31,7 +31,7 @@ const breakdownBudget = 5 * time.Minute
 type Server struct {
 	store  *store.Store
 	loop   *agent.Loop
-	client *openrouter.Client
+	client llm.Catalog
 	cfg    config.Config
 	ui     fs.FS
 
@@ -39,7 +39,7 @@ type Server struct {
 	http *http.Server
 }
 
-func New(s *store.Store, l *agent.Loop, c *openrouter.Client, cfg config.Config, ui fs.FS) *Server {
+func New(s *store.Store, l *agent.Loop, c llm.Catalog, cfg config.Config, ui fs.FS) *Server {
 	return &Server{store: s, loop: l, client: c, cfg: cfg, ui: ui}
 }
 

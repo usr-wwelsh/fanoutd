@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"fanoutd/internal/models"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/store"
 )
 
@@ -158,7 +158,7 @@ func reviewLoopWithModel(t *testing.T, calls ...reviewCall) (*Loop, *store.Store
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	client := openrouter.NewClient("test-key", "test-model", srv.URL)
+	client := llm.NewClient("test-key", "test-model", srv.URL)
 	l := NewLoop(s, client, filepath.Join(dir, "output"))
 	l.SetReview(true, "")
 	stopEverything(t, l)
@@ -725,7 +725,7 @@ func TestAuthorReplaySkipsReviewSteps(t *testing.T) {
 func TestSettleGoesStraightToFinishedWithoutReview(t *testing.T) {
 	_, s := reviewLoop(t)
 	dir := t.TempDir()
-	client := openrouter.NewClient("test-key", "test-model", "http://127.0.0.1:1")
+	client := llm.NewClient("test-key", "test-model", "http://127.0.0.1:1")
 	plain := NewLoop(s, client, filepath.Join(dir, "output"))
 
 	task, err := s.CreateTaskFrom(store.NewTask{Title: "t", Goal: "g"})

@@ -11,7 +11,7 @@ import (
 
 	"fanoutd/internal/agent"
 	"fanoutd/internal/config"
-	"fanoutd/internal/openrouter"
+	"fanoutd/internal/llm"
 	"fanoutd/internal/server"
 	"fanoutd/internal/store"
 )
@@ -59,7 +59,7 @@ func main() {
 		log.Printf("reclaimed %d task(s) left running by an earlier process\n", n)
 	}
 
-	client := openrouter.NewClient(cfg.OpenRouterKey, cfg.OpenRouterModel, cfg.BaseURL)
+	client := llm.NewClient(cfg.OpenRouterKey, cfg.OpenRouterModel, cfg.BaseURL)
 	loop := agent.NewLoop(s, client, cfg.OutputDir)
 	loop.SetMaxParallel(cfg.MaxParallel)
 	loop.SetMaxSteps(cfg.MaxSteps)

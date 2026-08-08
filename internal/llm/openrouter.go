@@ -1,4 +1,4 @@
-package openrouter
+package llm
 
 import (
 	"context"
@@ -16,16 +16,7 @@ import (
 // of days, so refetching per page load would be pure waste.
 const modelsTTL = 30 * time.Minute
 
-// Model is one entry of the OpenRouter catalog, trimmed to what the picker needs.
-type Model struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ContextLength int    `json:"context_length"`
-	Free          bool   `json:"free"`
-	// Tools reports whether the model advertises native tool calling. Models
-	// without it fall back to the JSON protocol, which is less reliable.
-	Tools bool `json:"tools"`
-}
+var _ Catalog = (*Client)(nil)
 
 type modelsResponse struct {
 	Data []struct {
