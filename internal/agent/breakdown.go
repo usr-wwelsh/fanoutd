@@ -212,7 +212,7 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 		// No tools: this call wants one JSON object, which is the one thing
 		// response_format is for. The client falls back on its own for providers
 		// that reject it.
-		resp, err := l.client.Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: req.Model})
+		resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: req.Model})
 		if err != nil {
 			// A transport failure is not a bad plan; re-asking would only repeat it.
 			return nil, fmt.Errorf("breakdown call failed: %w", err)

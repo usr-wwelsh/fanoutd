@@ -162,6 +162,24 @@ type Loop struct {
 	sweep context.CancelFunc
 }
 
+// SetClient points the loop at a different provider. A run already in flight
+// picks it up at its next step rather than being cancelled: the transcript is
+// the provider-neutral part of a run, so continuing it on a new endpoint is
+// exactly what changing the setting asked for.
+func (l *Loop) SetClient(c llm.API) {
+	l.mu.Lock()
+	l.client = c
+	l.mu.Unlock()
+}
+
+// api reads the current provider. Every call goes through it rather than
+// touching l.client, so a swap mid-run is a lock rather than a data race.
+func (l *Loop) api() llm.API {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.client
+}
+
 // SetSandbox enables the shell tool. A nil sandbox leaves agents file-only.
 func (l *Loop) SetSandbox(sb *Sandbox) {
 	l.mu.Lock()
@@ -190,22 +208,25 @@ func NewLoop(s *store.Store, c llm.API, outputDir string) *Loop {
 	}
 }
 
-// SetMaxSteps bounds how many steps one run gets before it concedes. Values
-// below one are ignored, so an unset config leaves the default standing.
+// SetMaxSteps bounds how many steps one run gets before it concedes. Anything
+// below one restores the default, which is what an unset config means and also
+// what clearing the field on the settings page has to mean — a limit that could
+// only ever be raised would leave the last number typed in force with nothing
+// on screen saying so.
 func (l *Loop) SetMaxSteps(n int) {
 	if n < 1 {
-		return
+		n = defaultMaxSteps
 	}
 	l.mu.Lock()
 	l.maxSteps = n
 	l.mu.Unlock()
 }
 
-// SetMaxParallel bounds concurrent subtasks within one breakdown. Values below
-// one are ignored.
+// SetMaxParallel bounds concurrent subtasks within one breakdown. Anything below
+// one restores the default, for the same reason.
 func (l *Loop) SetMaxParallel(n int) {
 	if n < 1 {
-		return
+		n = defaultMaxParallel
 	}
 	l.mu.Lock()
 	l.maxParallel = n
@@ -561,7 +582,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 			opts = llm.ChatOptions{ForceJSON: true, Model: task.Model}
 		}
 
-		resp, err := l.client.Chat(ctx, messages, opts)
+		resp, err := l.api().Chat(ctx, messages, opts)
 		if err != nil {
 			if stopped(ctx) {
 				l.markStopped(taskID, step)

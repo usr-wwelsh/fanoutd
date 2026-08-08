@@ -522,7 +522,7 @@ func (l *Loop) runReview(ctx context.Context, t reviewTarget) {
 			opts = llm.ChatOptions{ForceJSON: true, Model: model}
 		}
 
-		resp, err := l.client.Chat(ctx, messages, opts)
+		resp, err := l.api().Chat(ctx, messages, opts)
 		if err != nil {
 			if stopped(ctx) {
 				return
@@ -628,7 +628,7 @@ func (l *Loop) decideNow(ctx context.Context, t reviewTarget, model string, mess
 	}
 	messages = append(messages, llm.MsgBlock{Role: "user", Content: reviewDecidePrompt})
 
-	resp, err := l.client.Chat(ctx, messages, llm.ChatOptions{Tools: VerdictToolDefs(), Model: model})
+	resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{Tools: VerdictToolDefs(), Model: model})
 	if err != nil {
 		if stopped(ctx) {
 			return
