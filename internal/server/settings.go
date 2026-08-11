@@ -62,9 +62,10 @@ type settingField struct {
 	Placeholder string `json:"placeholder,omitempty"`
 	// Restart marks a setting the running process cannot adopt.
 	Restart bool `json:"restart,omitempty"`
-	// Half asks for a field half the form's width, so a pair that is read
-	// together is laid out together. The two model fields are the case: the
-	// reviewer model is only meaningful against the model it is judging.
+	// Half asks for a field half the form's width, so fields that are read
+	// together are laid out together. The model fields are the case: the
+	// orchestrator and reviewer models are only meaningful against the model
+	// they stand in for.
 	Half bool `json:"half,omitempty"`
 }
 
@@ -92,13 +93,18 @@ var settingFields = []settingField{
 		Help: "Overrides where the provider answers — a local server on an unusual port, or a proxy. Required for Custom.",
 	},
 
-	// The two models sit side by side because the second only means anything
-	// against the first: a reviewer left empty runs on whatever the task used,
-	// and a model reviewing its own output agrees with it. Seeing one number
-	// next to the other is what makes that visible.
+	// The three models sit side by side because the second and third only mean
+	// anything against the first: an orchestrator or reviewer left empty runs on
+	// whatever the task used, and a model reviewing its own output agrees with
+	// it. Seeing the numbers next to each other is what makes that visible.
 	{
 		Key: "FANOUT_MODEL", Label: "Default model", Kind: kindText, Group: grpModels, Half: true,
 		Help: "What a task with no model of its own runs on.",
+	},
+	{
+		Key: "FANOUT_ORCHESTRATOR_MODEL", Label: "Orchestrator model", Kind: kindText, Group: grpModels, Half: true,
+		Placeholder: "the task's own model",
+		Help:        "Splits an idea into subtasks. Pick a stronger planner, or leave it to plan on whatever model the idea runs on.",
 	},
 	{
 		Key: "FANOUT_REVIEW_MODEL", Label: "Reviewer model", Kind: kindText, Group: grpModels, Half: true,
@@ -458,6 +464,7 @@ func (s *Server) apply(cfg config.Config) []string {
 	s.loop.SetMaxParallel(cfg.MaxParallel)
 	s.loop.SetMaxSteps(cfg.MaxSteps)
 	s.loop.SetReview(cfg.Review, cfg.ReviewModel)
+	s.loop.SetOrchestratorModel(cfg.OrchestratorModel)
 
 	if w := s.applySandbox(cfg); w != "" {
 		warnings = append(warnings, w)

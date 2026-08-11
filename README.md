@@ -295,6 +295,7 @@ is a separate ~6 MB binary that belongs on whatever machine you type from.
 | `FANOUT_SHELL` | `0` | Enable `run_command`; the rest of the shell knobs are in `.env.example` |
 | `FANOUT_REVIEW` | `0` | Send finished runs to a reviewing agent before Finished |
 | `FANOUT_REVIEW_MODEL` | *(the task's own)* | Model the reviewer runs on; pick a different one |
+| `FANOUT_ORCHESTRATOR_MODEL` | *(the task's own)* | Model that splits an idea into subtasks |
 | `FANOUT_ENV_FILE` | *(below)* | Override the settings file location |
 
 The `OPENROUTER_*` names predate there being a choice, and still work: an

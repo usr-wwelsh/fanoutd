@@ -207,12 +207,20 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 		{Role: "user", Content: "Idea: " + req.Idea + seedBrief(req.Seed) + "\n\nSplit it. Reply with the JSON object and nothing else."},
 	}
 
+	// The orchestrator model, when set, plans every breakdown regardless of what
+	// model the idea itself will run on — the same relationship the reviewer
+	// model has to the task it judges.
+	model := l.orchestratorModelSetting()
+	if model == "" {
+		model = req.Model
+	}
+
 	var last error
 	for attempt := 0; attempt < replanAttempts; attempt++ {
 		// No tools: this call wants one JSON object, which is the one thing
 		// response_format is for. The client falls back on its own for providers
 		// that reject it.
-		resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: req.Model})
+		resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: model})
 		if err != nil {
 			// A transport failure is not a bad plan; re-asking would only repeat it.
 			return nil, fmt.Errorf("breakdown call failed: %w", err)

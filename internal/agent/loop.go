@@ -157,6 +157,9 @@ type Loop struct {
 	// reviewModel names what that agent runs on. See review.go.
 	review      bool
 	reviewModel string
+	// orchestratorModel names what the breakdown call plans on. Empty leaves it
+	// on whatever model the breakdown request itself named. See breakdown.go.
+	orchestratorModel string
 	// sweep cancels the startup review sweep, which belongs to no task and no
 	// group and so is reachable through neither map.
 	sweep context.CancelFunc
@@ -194,6 +197,22 @@ func (l *Loop) Sandboxed() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.sandbox != nil
+}
+
+// SetOrchestratorModel names the model the breakdown call plans on. An empty
+// model leaves it on whatever the breakdown request itself named — the same
+// fallback shape as SetReview, for the same reason: this is a global default,
+// not the only way to set it.
+func (l *Loop) SetOrchestratorModel(model string) {
+	l.mu.Lock()
+	l.orchestratorModel = strings.TrimSpace(model)
+	l.mu.Unlock()
+}
+
+func (l *Loop) orchestratorModelSetting() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.orchestratorModel
 }
 
 func NewLoop(s *store.Store, c llm.API, outputDir string) *Loop {

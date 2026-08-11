@@ -43,6 +43,10 @@ type Config struct {
 	// task used — honest, and much weaker: a model reviewing its own output
 	// agrees with it. It must support tool calls.
 	ReviewModel string
+	// OrchestratorModel is the model that splits an idea into subtasks. Empty
+	// means the breakdown call runs on whatever model the request itself named,
+	// which falls back to the default model in turn.
+	OrchestratorModel string
 	// Shell enables the sandboxed run_command tool. Off by default, and ignored
 	// when bubblewrap will not run.
 	Shell        bool
@@ -125,6 +129,7 @@ func parse(get func(string) string) Config {
 
 	cfg.Review = truthy(get("FANOUT_REVIEW"))
 	cfg.ReviewModel = strings.TrimSpace(get("FANOUT_REVIEW_MODEL"))
+	cfg.OrchestratorModel = strings.TrimSpace(get("FANOUT_ORCHESTRATOR_MODEL"))
 
 	cfg.Shell = truthy(get("FANOUT_SHELL"))
 	cfg.ShellNet = truthy(get("FANOUT_SHELL_NET"))

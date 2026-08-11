@@ -79,6 +79,11 @@ func main() {
 		}
 	}
 
+	if cfg.OrchestratorModel != "" {
+		loop.SetOrchestratorModel(cfg.OrchestratorModel)
+		log.Printf("breakdown planning on %s\n", cfg.OrchestratorModel)
+	}
+
 	// A sandbox that cannot be built is not degraded into an unsandboxed shell:
 	// the tool is simply never offered, and agents stay file-only.
 	if cfg.Shell {
