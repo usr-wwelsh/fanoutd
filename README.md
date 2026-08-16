@@ -1,5 +1,7 @@
 # fanoutd
 
+[![Read about the commits](https://img.shields.io/badge/commits-code%20blog-1a1a1a?style=flat-square)](https://wwel.sh/digest.html?repo=fanoutd)
+
 Multi-agent orchestrator with a kanban board, driven by any OpenAI-compatible model provider — hosted or local.
 
 Two binaries in one module:
