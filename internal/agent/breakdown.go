@@ -111,6 +111,9 @@ Rules:
 - Between 2 and 6 subtasks. Split where the files split. If the idea produces
   two files, a two-way split is the right answer and a five-way split is not.
   Never invent a file to justify another subtask.
+- Be brief. A goal under 120 words, the contract as bare declarations, a
+  criterion in one sentence. Everything you write here is paid for twice —
+  once generating the plan, again by every subtask reading it on every step.
 - Every subtask writes at least one file. A subtask that writes nothing produces
   nothing and nothing can depend on it.
 - Every subtask carries at least one criterion, and every criterion is about the
