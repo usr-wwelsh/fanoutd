@@ -2,6 +2,11 @@ package llm
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -10,7 +15,7 @@ func consume(t *testing.T, body string) (*Result, error) {
 	t.Helper()
 	scanner := bufio.NewScanner(strings.NewReader(body))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
-	return consumeStream(scanner, func() {})
+	return consumeStream(scanner, func() {}, nil)
 }
 
 func TestConsumeStreamContent(t *testing.T) {
@@ -161,5 +166,53 @@ func TestConsumeStreamTruncated(t *testing.T) {
 	}
 	if got.Content != "partial" {
 		t.Errorf("content = %q, want %q", got.Content, "partial")
+	}
+}
+
+// An observer handed to consumeStream sees every text fragment as it arrives,
+// which is what lets a caller watch a reply being written.
+func TestConsumeStreamHandsEachFragmentToOnDelta(t *testing.T) {
+	body := `data: {"choices":[{"delta":{"content":"Hello"}}]}
+
+data: {"choices":[{"delta":{"content":" world"}}]}
+
+data: [DONE]
+`
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
+	var got []string
+	_, err := consumeStream(scanner, func() {}, func(d string) { got = append(got, d) })
+	if err != nil {
+		t.Fatalf("consumeStream: %v", err)
+	}
+	if len(got) != 2 || strings.Join(got, "") != "Hello world" {
+		t.Errorf("deltas = %q, want each fragment as it arrived", got)
+	}
+}
+
+// The option has to survive the whole call chain — send, post, the rate-limit
+// and transient loops, attempt — or an observer silently sees nothing while
+// every other path keeps working.
+func TestChatDeliversTheStreamToOnDelta(t *testing.T) {
+	frame1, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": "he"}}},
+	})
+	frame2, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": "llo"}}},
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", frame1, frame2)
+	}))
+	defer srv.Close()
+
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
+	var got []string
+	res, err := c.Chat(context.Background(), nil, ChatOptions{OnDelta: func(d string) { got = append(got, d) }})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if res.Content != "hello" || len(got) != 2 {
+		t.Errorf("content %q from deltas %q, want \"hello\" in two fragments", res.Content, got)
 	}
 }

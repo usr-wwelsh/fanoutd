@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import { AuthError, breakdown, fetchGroupPlan, stopGroup } from '../api.js';
+  import { AuthError, breakdownStream, fetchGroupPlan, stopGroup } from '../api.js';
   import { collectSeed, describeSeed } from '../seed.js';
   import ModelPicker from './ModelPicker.svelte';
 
@@ -16,6 +16,15 @@
   let plan = $state(null);
   let poll = null;
 
+  // Live progress while the planner works: the stage it has reached and what
+  // it has written so far. Without this, a split is minutes of frozen dialog.
+  let phase = $state('planning');
+  let phaseNote = $state('');
+  let progress = $state(null);
+  let elapsed = $state(0);
+  let clock = null;
+  let tailBox = $state(null);
+
   // The seed is read here and travels in the request body, so what the planner
   // is shown is settled before the slow call starts.
   let seed = $state([]);
@@ -28,11 +37,22 @@
   let waves = $derived(plan?.waves ?? []);
   let doneCount = $derived((plan?.tasks ?? []).filter(t => t.status === 'done').length);
 
-  onDestroy(stopPolling);
+  onDestroy(() => { stopPolling(); stopClock(); });
 
   function stopPolling() {
     if (poll) clearInterval(poll);
     poll = null;
+  }
+
+  function beginClock() {
+    elapsed = 0;
+    stopClock();
+    clock = setInterval(() => { elapsed += 1; }, 1000);
+  }
+
+  function stopClock() {
+    if (clock) clearInterval(clock);
+    clock = null;
   }
 
   async function submit() {
@@ -42,16 +62,29 @@
     }
     loading = true;
     error = '';
+    phase = 'planning';
+    phaseNote = '';
+    progress = null;
+    beginClock();
     try {
-      // The server does one or two model calls before it answers, so this is
-      // the one request in the UI measured in tens of seconds.
-      result = await breakdown({ idea, model, start: true, seed });
+      // The server streams its work as it happens — the stage it has reached,
+      // and snapshots of what the planner has written — so the wait has
+      // something to watch.
+      result = await breakdownStream({ idea, model, start: true, seed }, (e) => {
+        if (e.kind === 'phase') {
+          phase = e.phase;
+          phaseNote = e.note ?? '';
+        } else if (e.kind === 'progress') {
+          progress = e;
+        }
+      });
       plan = result.plan ?? null;
       dispatch('created');
       if (result.group_id) startPolling(result.group_id);
     } catch (e) {
       error = e instanceof AuthError ? 'The session expired. Log in again to continue.' : e.message;
     }
+    stopClock();
     loading = false;
   }
 
@@ -121,6 +154,22 @@
     for (const wave of waves) for (const id of wave) out.set(id, ++n);
     return out;
   });
+
+  const PHASES = {
+    planning: 'Planning the split',
+    replanning: 'Fixing a rejected plan',
+    building: 'Creating subtasks',
+    starting: 'Starting the schedule',
+    fallback: 'Falling back to one task',
+  };
+
+  function fmt(n) { return Number(n ?? 0).toLocaleString(); }
+  function mmss(s) { return `${Math.floor(s / 60)}:${pad(s % 60)}`; }
+
+  // Keep the streaming text pinned to its newest lines.
+  $effect(() => {
+    if (tailBox && progress?.tail) tailBox.scrollTop = tailBox.scrollHeight;
+  });
 </script>
 
 <div class="modal-backdrop">
@@ -183,6 +232,24 @@
           <span class="eyebrow">Model</span>
           <ModelPicker bind:value={model} disabled={loading} />
         </label>
+        {#if loading}
+          <div class="progress">
+            <div class="head">
+              <span class="dot"></span>
+              <span class="phase">{PHASES[phase] ?? 'Working'}</span>
+              <span class="clock">{mmss(elapsed)}</span>
+            </div>
+            {#if phaseNote}
+              <div class="note">{phaseNote}</div>
+            {/if}
+            {#if progress}
+              <pre class="tail" bind:this={tailBox}>{progress.tail}</pre>
+              <div class="counters"><span>{fmt(progress.chars)} chars</span><span>≈ {fmt(progress.tokens)} tokens</span></div>
+            {:else}
+              <div class="counters">waiting for the model…</div>
+            {/if}
+          </div>
+        {/if}
         {#if error}
           <div class="notice bad">{error}</div>
         {/if}
@@ -310,6 +377,46 @@
   .drop:hover:not(:disabled) { color: var(--fault); }
 
   .skip { display: block; font-family: var(--f-mono); font-size: 11px; }
+
+  .progress { margin-bottom: 12px; border: 1px solid var(--rule); background: var(--panel); }
+  .head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12.5px; }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--live);
+    animation: mark-pulse 1.6s ease-in-out infinite;
+  }
+  .phase { flex: 1; }
+  .clock { font-family: var(--f-mono); font-size: 11px; color: var(--ink-3); }
+  .note {
+    padding: 0 10px 8px;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .tail {
+    margin: 0;
+    padding: 8px 10px;
+    border-top: 1px solid var(--rule);
+    max-height: 150px;
+    overflow-y: auto;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .counters {
+    display: flex;
+    gap: 14px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+  }
 
   .tally {
     display: grid;

@@ -129,16 +129,56 @@ export async function retryTask(taskId, body = {}) {
   });
 }
 
-// breakdown splits one idea into a group of subtasks that share a workspace and
-// run in dependency order. It blocks on the model, so it is much slower than
-// every other call here; when the idea cannot be partitioned the server returns
-// a single ordinary task with the reason in `fallback`.
-export async function breakdown(body) {
-  return request('/breakdown', {
+// breakdownStream splits one idea into a group of subtasks that share a
+// workspace and run in dependency order, and reports the split as it happens:
+// the server answers with one JSON object per line — phases while they change,
+// snapshots of what the planner has written so far — and one final object
+// carrying the result. onEvent sees every line except that last one; the
+// resolved result is the return value. When the idea cannot be partitioned the
+// server still resolves, with the reason in `fallback`.
+export async function breakdownStream(body, onEvent) {
+  const res = await fetch(`${API_BASE}/breakdown`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
     body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    // Errors before the stream opens are plain HTTP errors.
+    const text = await res.text();
+    const message = text.trim() || `${res.status} ${res.statusText}`;
+    throw res.status === 401 ? new AuthError(message) : new Error(message);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let result = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, cut).trim();
+      pending = pending.slice(cut + 1);
+      if (!line) continue;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue; // a torn frame must not end the stream
+      }
+      if (event.kind === 'result') {
+        result = event.result;
+      } else if (event.kind === 'error') {
+        throw new Error(event.message || 'the breakdown failed');
+      } else if (onEvent) {
+        onEvent(event);
+      }
+    }
+  }
+  if (!result) throw new Error('the breakdown ended without a result');
+  return result;
 }
 
 // fetchGroupPlan returns the resolved waves plus every subtask's current state.

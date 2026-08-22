@@ -685,6 +685,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // handleBreakdown splits one idea into a group of subtasks. It blocks on the
 // model, which is why it is the only endpoint with a budget of its own; the
 // schedule it starts afterwards runs in the background as usual.
+//
+// A client that sends Accept: application/x-ndjson gets the same breakdown as a
+// stream of events instead — one JSON object per line — so minutes of planning
+// do not have to be spent staring at an unchanging request. Anything else gets
+// the plain single-document response the CLI reads.
 func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -718,13 +723,20 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), breakdownBudget)
 	defer cancel()
 
-	result, err := s.loop.Breakdown(ctx, agent.BreakdownRequest{
+	breq := agent.BreakdownRequest{
 		Title: strings.TrimSpace(req.Title),
 		Idea:  strings.TrimSpace(req.Idea),
 		Model: strings.TrimSpace(req.Model),
 		Start: req.Start,
 		Seed:  req.Seed,
-	})
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") {
+		s.streamBreakdown(w, ctx, r.Context(), breq)
+		return
+	}
+
+	result, err := s.loop.Breakdown(ctx, breq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -736,6 +748,62 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(result)
+}
+
+// streamBreakdown runs the breakdown and writes one event object per line as
+// it happens, ending with the result. Headers are committed before the model
+// is asked for anything, which is the point — the client sees the stream open
+// immediately — but also the cost: from here on, failures travel as events
+// rather than as status codes.
+//
+// budget and disconnect are deliberately two different contexts. budget bounds
+// the model calls and expires on its own timer — exactly the moment a slow
+// breakdown gives up and falls back to a single task, which is also the moment
+// its result matters most. Gating delivery on that same context would race the
+// fallback event against the timeout that caused it. disconnect (the request's
+// own context) only ends when the client actually goes away, which is the one
+// reason a still-open stream should ever stop accepting events.
+func (s *Server) streamBreakdown(w http.ResponseWriter, budget, disconnect context.Context, breq agent.BreakdownRequest) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	events := make(chan models.BreakdownEvent, 64)
+	go func() {
+		defer close(events)
+		send := func(e models.BreakdownEvent) bool {
+			select {
+			case events <- e:
+				return true
+			case <-disconnect.Done():
+				return false
+			}
+		}
+		breq.Events = func(e models.BreakdownEvent) { send(e) }
+		result, err := s.loop.Breakdown(budget, breq)
+		if err != nil {
+			send(models.BreakdownEvent{Kind: models.BreakdownKindError, Message: err.Error()})
+			return
+		}
+		if result.Fallback != "" {
+			log.Printf("breakdown fell back to a single task: %s\n", result.Fallback)
+		}
+		send(models.BreakdownEvent{Kind: models.BreakdownKindResult, Result: result})
+	}()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	for e := range events {
+		if err := json.NewEncoder(w).Encode(e); err != nil {
+			// The reader is gone; the producer's disconnect.Done branch ends it.
+			return
+		}
+		flusher.Flush()
+	}
 }
 
 func (s *Server) handleGroupRoute(w http.ResponseWriter, r *http.Request) {

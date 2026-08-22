@@ -117,4 +117,11 @@ type ChatOptions struct {
 	ForceJSON bool
 	// Model overrides the client default for this request. Empty uses the default.
 	Model string
+	// OnDelta observes each fragment of the reply's text as it streams past.
+	// Every request is streamed internally anyway; without this the fragments
+	// are assembled silently into Result.Content at the end. Nil means silent,
+	// which is what most callers want. It runs on the reader's goroutine and
+	// must be cheap; it is not called again after Chat returns, and a retried
+	// call delivers its fragments separately rather than resuming.
+	OnDelta func(delta string)
 }

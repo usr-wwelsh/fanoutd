@@ -325,6 +325,120 @@ func TestGroupIdeaIsRecoverableFromASubtask(t *testing.T) {
 	}
 }
 
+// The events are what a client watches while a split runs, so their order is
+// part of the contract: each stage is announced before its work happens, and
+// the planner's output arrives between them as progress.
+func TestBreakdownReportsItsProgress(t *testing.T) {
+	l, _, _ := breakdownLoop(t, goodPlan)
+
+	var events []models.BreakdownEvent
+	req := BreakdownRequest{Idea: "build a board", Events: func(e models.BreakdownEvent) {
+		events = append(events, e)
+	}}
+	if _, err := l.Breakdown(context.Background(), req); err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+
+	var phases []string
+	progressed := false
+	for _, e := range events {
+		switch e.Kind {
+		case models.BreakdownKindPhase:
+			phases = append(phases, e.Phase)
+		case models.BreakdownKindProgress:
+			progressed = true
+			if e.Chars == 0 || e.Tail == "" {
+				t.Errorf("progress event carries nothing: %+v", e)
+			}
+			if !strings.Contains(e.Tail, "subtasks") {
+				t.Errorf("progress tail lost the plan itself: %q", e.Tail)
+			}
+		}
+	}
+	want := []string{models.PhasePlanning, models.PhaseBuilding}
+	if len(phases) != len(want) {
+		t.Fatalf("phases = %v, want exactly %v", phases, want)
+	}
+	for i := range want {
+		if phases[i] != want[i] {
+			t.Fatalf("phases = %v, want %v", phases, want)
+		}
+	}
+	if !progressed {
+		t.Error("a streamed plan produced no progress events")
+	}
+}
+
+// A rejected plan must not look like silence: the replanning stage names what
+// was wrong with it, which is the same fault the model itself is shown.
+func TestBreakdownNamesTheFaultWhenItReplans(t *testing.T) {
+	l, _, _ := breakdownLoop(t, conflictingPlan, goodPlan)
+
+	var replan *models.BreakdownEvent
+	req := BreakdownRequest{Idea: "build a board", Events: func(e models.BreakdownEvent) {
+		if e.Kind == models.BreakdownKindPhase && e.Phase == models.PhaseReplanning {
+			replan = &e
+		}
+	}}
+	if _, err := l.Breakdown(context.Background(), req); err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+	if replan == nil {
+		t.Fatal("the second attempt was never announced as a replanning")
+	}
+	if !strings.Contains(replan.Note, "board.js") {
+		t.Errorf("the replanning note does not name the contested path: %q", replan.Note)
+	}
+}
+
+// The floor has its own announcement, so a client can say why the idea ended
+// up as one task while it happens rather than after.
+func TestBreakdownAnnouncesTheFallback(t *testing.T) {
+	l, _, _ := breakdownLoop(t)
+
+	var log eventLog
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := l.Breakdown(ctx, BreakdownRequest{Idea: "build a board"}.WithEvents(&log))
+	if err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+	if result.Fallback == "" {
+		t.Fatal("want the single-task floor")
+	}
+	if log.phase(models.PhaseFallback) == nil {
+		t.Error("the fallback was never announced")
+	}
+}
+
+// eventLog collects what Breakdown emits and answers the small questions a
+// test wants to ask of it.
+type eventLog struct {
+	events []models.BreakdownEvent
+}
+
+func (l *eventLog) record(e models.BreakdownEvent) {
+	l.events = append(l.events, e)
+}
+
+func (l *eventLog) phase(phase string) *models.BreakdownEvent {
+	for i := range l.events {
+		e := &l.events[i]
+		if e.Kind == models.BreakdownKindPhase && e.Phase == phase {
+			return e
+		}
+	}
+	return nil
+}
+
+// WithEvents returns the receiver carrying an observer that appends to log.
+// It exists so a test can ask for one request's worth of events inline.
+func (req BreakdownRequest) WithEvents(log *eventLog) BreakdownRequest {
+	req.Events = log.record
+	return req
+}
+
 // buildGroup is reached with a validated plan, so the only way its own checks
 // fire is a race. Driving it directly is how the unwind gets covered - a group
 // that cannot be scheduled must leave nothing behind for the fallback to trip

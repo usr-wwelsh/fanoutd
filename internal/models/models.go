@@ -109,6 +109,53 @@ type BreakdownResult struct {
 	Started  bool       `json:"started"`
 }
 
+// The kinds of BreakdownEvent. A phase says which stage the breakdown has
+// reached; progress carries the planner's streaming output; result carries the
+// final BreakdownResult and ends the stream; error reports a failure that
+// ended it.
+const (
+	BreakdownKindPhase    = "phase"
+	BreakdownKindProgress = "progress"
+	BreakdownKindResult   = "result"
+	BreakdownKindError    = "error"
+)
+
+// The stages of a breakdown, in the order they happen. Replanning repeats the
+// planning stage after a rejected plan; fallback replaces both when no plan
+// survives validation.
+const (
+	PhasePlanning   = "planning"
+	PhaseReplanning = "replanning"
+	PhaseBuilding   = "building"
+	PhaseStarting   = "starting"
+	PhaseFallback   = "fallback"
+)
+
+// BreakdownEvent is one step of a breakdown as it happens, streamed as one JSON
+// line per event. It exists so a client watching a split can show the model's
+// output growing rather than sitting through minutes of silence.
+type BreakdownEvent struct {
+	Kind string `json:"kind"`
+	// Phase names the stage for kind "phase".
+	Phase string `json:"phase,omitempty"`
+	// Note carries human-readable detail: why a plan was sent back, or why a
+	// breakdown fell back to one task.
+	Note string `json:"note,omitempty"`
+	// Chars and Tokens count the planner's reply so far. Tokens are estimated
+	// from characters — the stream itself carries no token counts.
+	Chars  int64 `json:"chars,omitempty"`
+	Tokens int64 `json:"tokens,omitempty"`
+	// Tail is the end of the text generated so far, enough to watch the plan
+	// being written without shipping every fragment.
+	Tail string `json:"tail,omitempty"`
+	// Message is the failure for kind "error". It exists because a stream has
+	// usually already committed its headers by then: the status line can no
+	// longer carry what went wrong, so the last line does.
+	Message string `json:"message,omitempty"`
+	// Result is the finished breakdown for kind "result".
+	Result *BreakdownResult `json:"result,omitempty"`
+}
+
 // SeedFile is one file placed in a workspace before anything runs, so an agent
 // starts with material rather than an empty directory. Content travels with the
 // request: the client reads the local path, which is what makes seeding work

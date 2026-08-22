@@ -84,9 +84,12 @@ type toolCallBuilder struct {
 }
 
 // consumeStream reads an SSE body to completion and returns the assembled turn.
-// The caller has already checked the status code. Cancellation arrives through
-// the body itself: the watchdog cancels the request, which fails the next read.
-func consumeStream(body *bufio.Scanner, touch func()) (*Result, error) {
+// The caller has already checked the status code. onDelta, when not nil, is
+// handed each fragment of text as it arrives, so a caller can watch the reply
+// being written instead of waiting for the whole of it. Cancellation arrives
+// through the body itself: the watchdog cancels the request, which fails the
+// next read.
+func consumeStream(body *bufio.Scanner, touch func(), onDelta func(string)) (*Result, error) {
 	var content strings.Builder
 	builders := map[int]*toolCallBuilder{}
 
@@ -124,6 +127,9 @@ func consumeStream(body *bufio.Scanner, touch func()) (*Result, error) {
 
 		delta := chunk.Choices[0].Delta
 		content.WriteString(delta.Content)
+		if onDelta != nil && delta.Content != "" {
+			onDelta(delta.Content)
+		}
 		for _, tc := range delta.ToolCalls {
 			b := builders[tc.Index]
 			if b == nil {

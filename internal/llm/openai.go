@@ -176,10 +176,10 @@ type attemptResult struct {
 // for cause — a 4xx, a cancelled context — comes straight back; anything that
 // could plausibly succeed on a second attempt gets transientRetries more
 // tries, on top of whatever the rate-limit loop inside does with 429s.
-func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
+func (c *Client) post(ctx context.Context, body []byte, onDelta func(string)) (*Result, error) {
 	var last error
 	for try := 0; ; try++ {
-		result, err := c.postOnce(ctx, body)
+		result, err := c.postOnce(ctx, body, onDelta)
 		if err == nil {
 			return result, nil
 		}
@@ -212,11 +212,11 @@ func transientFailure(err error) bool {
 // postOnce sends the request body once, retrying a 429 with exponential
 // backoff. Rate limiting is routine on free models and shorter-lived than a
 // whole run, so it must not abort the task on the first refusal.
-func (c *Client) postOnce(ctx context.Context, body []byte) (*Result, error) {
+func (c *Client) postOnce(ctx context.Context, body []byte, onDelta func(string)) (*Result, error) {
 	delay := rateLimitBackoff
 
 	for attempt := 0; ; attempt++ {
-		got, err := c.attempt(ctx, body)
+		got, err := c.attempt(ctx, body, onDelta)
 		if err != nil {
 			return nil, err
 		}
@@ -347,7 +347,7 @@ var waitFor = func(ctx context.Context, d time.Duration) error {
 // attempt runs one streaming request. The response is consumed as it arrives so
 // that a long generation is bounded by silence rather than by total elapsed
 // time — see streamIdleTimeout.
-func (c *Client) attempt(ctx context.Context, body []byte) (attemptResult, error) {
+func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(string)) (attemptResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -380,7 +380,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (attemptResult, error
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
 
-	result, err := consumeStream(scanner, touch)
+	result, err := consumeStream(scanner, touch, onDelta)
 	if err != nil {
 		return attemptResult{}, describeIdle(err, timedOut)
 	}
@@ -435,7 +435,7 @@ func (c *Client) send(ctx context.Context, messages []MsgBlock, opts ChatOptions
 		return nil, err
 	}
 
-	result, err := c.post(ctx, body)
+	result, err := c.post(ctx, body, opts.OnDelta)
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +450,7 @@ func (c *Client) send(ctx context.Context, messages []MsgBlock, opts ChatOptions
 		if err := waitFor(ctx, transientBackoff<<try+jitter()); err != nil {
 			return nil, err
 		}
-		if result, err = c.post(ctx, body); err != nil {
+		if result, err = c.post(ctx, body, opts.OnDelta); err != nil {
 			return nil, err
 		}
 	}

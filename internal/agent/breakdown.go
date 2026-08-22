@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"fanoutd/internal/llm"
 	"fanoutd/internal/models"
@@ -41,6 +42,58 @@ const breakdownEcho = 4000
 
 // ideaTitleLen is how much of an idea becomes the fallback task's title.
 const ideaTitleLen = 60
+
+// progressInterval paces progress events. Every token the planner writes is
+// already crossing this process; without pacing, a fast model would flood a
+// browser with one line per frame for minutes on end.
+const progressInterval = 150 * time.Millisecond
+
+// progressTail is how much of the planner's reply one progress event carries.
+// Long enough to watch subtasks appear as they are written, short enough that
+// an event stays a rounding error next to the reply itself.
+const progressTail = 600
+
+// planProgress accumulates what the planner has written so far and turns it
+// into throttled snapshots. There is one per model call: a second attempt is a
+// new generation, and its counts should start over rather than pile onto the
+// rejected attempt's.
+type planProgress struct {
+	req   BreakdownRequest
+	chars int64
+	tail  []rune
+	last  time.Time
+}
+
+func (p *planProgress) delta(s string) {
+	p.chars += int64(len([]rune(s)))
+	p.tail = append(p.tail, []rune(s)...)
+	if len(p.tail) > progressTail {
+		p.tail = p.tail[len(p.tail)-progressTail:]
+	}
+	if time.Since(p.last) < progressInterval {
+		return
+	}
+	p.flush()
+}
+
+func (p *planProgress) flush() {
+	p.last = time.Now()
+	p.req.emit(models.BreakdownEvent{
+		Kind:   models.BreakdownKindProgress,
+		Chars:  p.chars,
+		Tokens: p.chars / 4,
+		Tail:   string(p.tail),
+	})
+}
+
+// emit hands one event to the caller's observer, if there is one. Everything in
+// this file must treat a nil Events as ordinary — most callers do not stream,
+// and none of them should pay for it.
+func (req BreakdownRequest) emit(e models.BreakdownEvent) {
+	if req.Events != nil {
+		req.Events(e)
+	}
+}
 
 // breakdownKeys is the envelope field that identifies a breakdown object inside
 // whatever prose or fences the model wrapped it in.
@@ -175,6 +228,11 @@ type BreakdownRequest struct {
 	Model string
 	Start bool
 	Seed  []models.SeedFile
+	// Events, when set, receives the breakdown's progress as it happens: which
+	// stage has been reached, and what the planner is writing while it writes
+	// it. It runs synchronously on the caller's goroutine and must be cheap —
+	// a slow observer slows the breakdown.
+	Events func(models.BreakdownEvent)
 }
 
 // Breakdown turns an idea into a running group, or into one ordinary task.
@@ -194,6 +252,7 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 	if err != nil {
 		return l.singleTask(req, err)
 	}
+	req.emit(models.BreakdownEvent{Kind: models.BreakdownKindPhase, Phase: models.PhaseBuilding})
 	result, err := l.buildGroup(req, plan)
 	if err != nil {
 		return l.singleTask(req, err)
@@ -220,16 +279,32 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 
 	var last error
 	for attempt := 0; attempt < replanAttempts; attempt++ {
+		if attempt == 0 {
+			req.emit(models.BreakdownEvent{Kind: models.BreakdownKindPhase, Phase: models.PhasePlanning})
+		} else {
+			req.emit(models.BreakdownEvent{Kind: models.BreakdownKindPhase, Phase: models.PhaseReplanning, Note: last.Error()})
+		}
+
+		// The reply is streamed internally either way; the observer is what
+		// turns those fragments into something a client can watch.
 		// No tools: this call wants one JSON object, which is the one thing
 		// response_format is for. The client falls back on its own for providers
 		// that reject it.
-		resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: model})
+		watch := &planProgress{req: req}
+		opts := llm.ChatOptions{ForceJSON: true, Model: model}
+		if req.Events != nil {
+			opts.OnDelta = watch.delta
+		}
+		resp, err := l.api().Chat(ctx, messages, opts)
 		if err != nil {
 			// The client has already re-asked everything transient, so what
 			// survives here is a refusal for cause — which says nothing about
 			// the plan, and is not worth spending the replan on.
 			return nil, fmt.Errorf("breakdown call failed: %w", err)
 		}
+		// Settle the counts even though the tail end arrived inside the pace
+		// window, so a caller never reads a snapshot short of the whole reply.
+		watch.flush()
 
 		plan, err := parseBreakdown(resp.Content)
 		if err == nil {
@@ -571,6 +646,7 @@ func (l *Loop) buildGroup(req BreakdownRequest, plan *breakdownPlan) (*models.Br
 		},
 	}
 	if req.Start {
+		req.emit(models.BreakdownEvent{Kind: models.BreakdownKindPhase, Phase: models.PhaseStarting})
 		if err := l.StartGroup(groupID); err != nil {
 			// The group is built and valid; only the run failed to launch, and it
 			// can be started again.
@@ -666,6 +742,7 @@ func GroupIdea(description string) string {
 // with the original idea as the goal and the reason recorded, because a user who
 // asked for work to happen would rather have it happen serially than not at all.
 func (l *Loop) singleTask(req BreakdownRequest, cause error) (*models.BreakdownResult, error) {
+	req.emit(models.BreakdownEvent{Kind: models.BreakdownKindPhase, Phase: models.PhaseFallback, Note: cause.Error()})
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = ideaTitle(req.Idea)
