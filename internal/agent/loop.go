@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"fanoutd/internal/llm"
 	"fanoutd/internal/models"
@@ -699,13 +698,6 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 		if result.GoalMet {
 			l.finish(taskID, step, result.Summary)
 			return
-		}
-
-		select {
-		case <-ctx.Done():
-			l.markStopped(taskID, step)
-			return
-		case <-time.After(500 * time.Millisecond):
 		}
 	}
 
