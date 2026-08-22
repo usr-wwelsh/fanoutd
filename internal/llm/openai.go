@@ -439,8 +439,20 @@ func (c *Client) send(ctx context.Context, messages []MsgBlock, opts ChatOptions
 	if err != nil {
 		return nil, err
 	}
-	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return nil, fmt.Errorf("no content returned from %s", c.name())
+	// A stream that ends without a single usable token is how an overloaded
+	// free model refuses. It is not a completion, and it is usually gone on
+	// the second ask, so it gets the same bounded patience as a dropped
+	// connection rather than ending the run.
+	for try := 0; result.Content == "" && len(result.ToolCalls) == 0; try++ {
+		if try >= transientRetries || ctx.Err() != nil {
+			return nil, fmt.Errorf("no content returned from %s", c.name())
+		}
+		if err := waitFor(ctx, transientBackoff<<try+jitter()); err != nil {
+			return nil, err
+		}
+		if result, err = c.post(ctx, body); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

@@ -16,13 +16,16 @@ import (
 // that dies to either loses every step it paid for, so the client re-asks
 // before giving up.
 
-// flaky serves status n times, then streams a completion.
+// flaky serves status n times, then streams a completion. With empties set,
+// the first n responses are valid streams holding nothing, which is what an
+// overloaded free model sends back instead of an error.
 type flaky struct {
-	mu     sync.Mutex
-	status int
-	left   int
-	drop   bool
-	calls  int
+	mu      sync.Mutex
+	status  int
+	left    int
+	drop    bool
+	empties int
+	calls   int
 }
 
 func (f *flaky) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -33,8 +36,17 @@ func (f *flaky) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.left--
 	}
 	drop := f.drop && fail
+	empty := !fail && f.empties > 0
+	if empty {
+		f.empties--
+	}
 	f.mu.Unlock()
 
+	if empty {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, okStream(""))
+		return
+	}
 	if fail {
 		if drop {
 			hj, ok := w.(http.Hijacker)
@@ -113,6 +125,47 @@ func TestChatGivesUpOnAPermanentServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fmt.Sprint(http.StatusServiceUnavailable)) {
 		t.Errorf("error %q does not name the status", err)
+	}
+	if f.seen() != transientRetries+1 {
+		t.Errorf("made %d requests, want %d", f.seen(), transientRetries+1)
+	}
+}
+
+// An overloaded free model often answers with a well-formed stream holding
+// nothing at all. That is a refusal to generate, not a completion, and the
+// same endpoint usually produces one on the second ask.
+func TestChatReasksAnEmptyCompletion(t *testing.T) {
+	skipWaits(t)
+	f := &flaky{status: http.StatusBadGateway, empties: 1}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
+	res, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if res.Content != "hello" {
+		t.Errorf("content = %q", res.Content)
+	}
+	if f.seen() != 2 {
+		t.Errorf("made %d requests, want 2 (one empty, one served)", f.seen())
+	}
+}
+
+func TestChatGivesUpOnPermanentEmptyCompletions(t *testing.T) {
+	skipWaits(t)
+	f := &flaky{status: http.StatusBadGateway, left: 0, empties: 1000}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	c := NewClient(presets["openrouter"], "k", "m", srv.URL)
+	_, err := c.Chat(context.Background(), []MsgBlock{{Role: "user", Content: "hi"}}, ChatOptions{})
+	if err == nil {
+		t.Fatal("a model that never says anything returned success")
+	}
+	if !strings.Contains(err.Error(), "no content returned") {
+		t.Errorf("error %q does not say what happened", err)
 	}
 	if f.seen() != transientRetries+1 {
 		t.Errorf("made %d requests, want %d", f.seen(), transientRetries+1)
