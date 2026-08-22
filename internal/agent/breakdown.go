@@ -228,11 +228,33 @@ type BreakdownRequest struct {
 	Model string
 	Start bool
 	Seed  []models.SeedFile
+	// OrchestratorModel overrides the board's orchestrator setting for this one
+	// breakdown. Empty falls through to the board setting, and from there to
+	// Model — the same fallback planBreakdown already applied before this
+	// existed, just with one more rung above it.
+	OrchestratorModel string
+	// Review overrides the board's review setting for every task this
+	// breakdown creates, including the fallback. Nil follows the board's
+	// setting, same as a task created outside a breakdown.
+	Review *bool
 	// Events, when set, receives the breakdown's progress as it happens: which
 	// stage has been reached, and what the planner is writing while it writes
 	// it. It runs synchronously on the caller's goroutine and must be cheap —
 	// a slow observer slows the breakdown.
 	Events func(models.BreakdownEvent)
+}
+
+// reviewOverride renders Review as the value stored on a task: "on", "off", or
+// "" to leave it following the board setting.
+func (req BreakdownRequest) reviewOverride() string {
+	switch {
+	case req.Review == nil:
+		return ""
+	case *req.Review:
+		return "on"
+	default:
+		return "off"
+	}
 }
 
 // Breakdown turns an idea into a running group, or into one ordinary task.
@@ -271,8 +293,12 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 
 	// The orchestrator model, when set, plans every breakdown regardless of what
 	// model the idea itself will run on — the same relationship the reviewer
-	// model has to the task it judges.
-	model := l.orchestratorModelSetting()
+	// model has to the task it judges. A request naming its own orchestrator
+	// outranks the board's, the same way its own Model outranks the board default.
+	model := req.OrchestratorModel
+	if model == "" {
+		model = l.orchestratorModelSetting()
+	}
 	if model == "" {
 		model = req.Model
 	}
@@ -587,15 +613,17 @@ func (l *Loop) buildGroup(req BreakdownRequest, plan *breakdownPlan) (*models.Br
 		}
 	}
 
+	override := req.reviewOverride()
 	for _, sub := range subs {
 		task, err := l.store.CreateTaskFrom(store.NewTask{
-			Title:       sub.Title,
-			Description: subtaskContext(req.Idea, plan.Contract, sub.Integration),
-			Goal:        sub.Goal,
-			Criteria:    strings.Join(sub.Criteria, "\n"),
-			Model:       req.Model,
-			WorkspaceID: workspaceID,
-			GroupID:     groupID,
+			Title:          sub.Title,
+			Description:    subtaskContext(req.Idea, plan.Contract, sub.Integration),
+			Goal:           sub.Goal,
+			Criteria:       strings.Join(sub.Criteria, "\n"),
+			Model:          req.Model,
+			WorkspaceID:    workspaceID,
+			GroupID:        groupID,
+			ReviewOverride: override,
 		})
 		if err != nil {
 			unwind()
@@ -748,9 +776,10 @@ func (l *Loop) singleTask(req BreakdownRequest, cause error) (*models.BreakdownR
 		title = ideaTitle(req.Idea)
 	}
 	task, err := l.store.CreateTaskFrom(store.NewTask{
-		Title: title,
-		Goal:  req.Idea,
-		Model: req.Model,
+		Title:          title,
+		Goal:           req.Idea,
+		Model:          req.Model,
+		ReviewOverride: req.reviewOverride(),
 	})
 	if err != nil {
 		return nil, err

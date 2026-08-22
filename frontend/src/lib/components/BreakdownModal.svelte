@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import { AuthError, breakdownStream, fetchGroupPlan, stopGroup } from '../api.js';
+  import { AuthError, breakdownStream, fetchConfig, fetchGroupPlan, stopGroup } from '../api.js';
   import { collectSeed, describeSeed } from '../seed.js';
   import ModelPicker from './ModelPicker.svelte';
 
@@ -9,7 +9,23 @@
   // Two phases in one dialog: the idea goes in, and what came back stays on
   // screen while it runs. Closing early would hide the only view of the plan.
   let idea = $state('');
+  // Three separate models are in play for one breakdown — what the subtasks
+  // run on, what plans the split, and what reviews the result — and showing
+  // only the first as "Model" is what made this dialog unreadable. All three
+  // are named for what they do; the picker fields below are two of them.
   let model = $state('');
+  let orchestratorModel = $state('');
+  // The board's own review setting, read once so the toggle starts where the
+  // board already is rather than defaulting blind. reviewLoaded guards against
+  // that fetch clobbering a click the operator made before it resolved.
+  let review = $state(true);
+  let reviewModelLabel = $state('');
+  let reviewLoaded = false;
+  fetchConfig().then(cfg => {
+    reviewModelLabel = cfg.review_model || '';
+    if (!reviewLoaded) review = !!cfg.review;
+  }).catch(() => {});
+
   let loading = $state(false);
   let error = $state('');
   let result = $state(null);
@@ -70,14 +86,17 @@
       // The server streams its work as it happens — the stage it has reached,
       // and snapshots of what the planner has written — so the wait has
       // something to watch.
-      result = await breakdownStream({ idea, model, start: true, seed }, (e) => {
-        if (e.kind === 'phase') {
-          phase = e.phase;
-          phaseNote = e.note ?? '';
-        } else if (e.kind === 'progress') {
-          progress = e;
-        }
-      });
+      result = await breakdownStream(
+        { idea, model, orchestrator_model: orchestratorModel, review, start: true, seed },
+        (e) => {
+          if (e.kind === 'phase') {
+            phase = e.phase;
+            phaseNote = e.note ?? '';
+          } else if (e.kind === 'progress') {
+            progress = e;
+          }
+        },
+      );
       plan = result.plan ?? null;
       dispatch('created');
       if (result.group_id) startPolling(result.group_id);
@@ -229,9 +248,33 @@
           {/if}
         </div>
         <label class="field">
-          <span class="eyebrow">Model</span>
+          <span class="eyebrow">Subtask model</span>
           <ModelPicker bind:value={model} disabled={loading} />
+          <p class="field-help">What each split-off subtask runs on.</p>
         </label>
+        <label class="field">
+          <span class="eyebrow">Orchestrator model</span>
+          <ModelPicker bind:value={orchestratorModel} disabled={loading} />
+          <p class="field-help">Plans the split. Default follows the board's orchestrator setting, then the subtask model above.</p>
+        </label>
+        <label class="field checkbox-field">
+          <input
+            type="checkbox"
+            bind:checked={review}
+            disabled={loading}
+            onchange={() => { reviewLoaded = true; }}
+          />
+          <span>Review this work when it finishes</span>
+        </label>
+        <p class="field-help">
+          {#if review}
+            A second agent checks the result against its criteria before it is
+            filed, running on {reviewModelLabel || 'the same model the task used'}.
+          {:else}
+            Finished work is filed as soon as the agent signs off, with no second opinion.
+          {/if}
+          Change the reviewer model in Settings.
+        </p>
         {#if loading}
           <div class="progress">
             <div class="head">
@@ -334,6 +377,21 @@
 
 <style>
   .modal { max-width: 500px; }
+
+  .field-help {
+    margin: 4px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ink-3);
+  }
+
+  .checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .checkbox-field input { margin: 0; }
+  .checkbox-field + .field-help { margin-bottom: 12px; }
 
   .hint {
     margin: 0 0 4px;

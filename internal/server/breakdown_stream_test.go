@@ -136,6 +136,30 @@ func TestBreakdownWithoutStreamingStillAnswersOneDocument(t *testing.T) {
 	}
 }
 
+// The modal's review toggle and orchestrator model both have to survive the
+// wire: this is what turns a POST body into the fields agent.BreakdownRequest
+// actually reads.
+func TestBreakdownRequestFieldsReachTheTasks(t *testing.T) {
+	srv := streamServer(t)
+
+	w := postBreakdown(t, srv, "", `{"idea":"build a board","orchestrator_model":"planner-x","review":false}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var result models.BreakdownResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("body was not a single breakdown document: %v\n%s", err, w.Body.String())
+	}
+	if len(result.Tasks) == 0 {
+		t.Fatal("no tasks were created")
+	}
+	for _, task := range result.Tasks {
+		if task.ReviewOverride != "off" {
+			t.Errorf("%s review_override = %q, want off", task.Title, task.ReviewOverride)
+		}
+	}
+}
+
 // Rejections that happen before the model call are ordinary HTTP errors even
 // for a streaming client: nothing has been written yet, so the status line can
 // still carry them.

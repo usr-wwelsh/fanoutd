@@ -150,7 +150,7 @@ type reviewTarget struct {
 // already read its output, and nothing tracks a stale read — so it hands off to
 // its group, which is reviewed only once every subtask is in.
 func (l *Loop) reviewAfterRun(ctx context.Context, taskID string) {
-	if !l.reviewEnabled() || stopped(ctx) {
+	if stopped(ctx) {
 		return
 	}
 	task, err := l.store.GetTask(taskID)
@@ -161,6 +161,9 @@ func (l *Loop) reviewAfterRun(ctx context.Context, taskID string) {
 		l.reviewGroupAfterSolo(ctx, task.GroupID)
 		return
 	}
+	// awaitingReview is the real gate: settleRun already decided, per this
+	// task's own override or the board's setting, whether a finished run
+	// landed in the review column at all.
 	if !awaitingReview(*task) {
 		return
 	}
@@ -276,7 +279,7 @@ func originGoal(t models.Task) string {
 // A group with any subtask that did not finish is not reviewed. There is nothing
 // coherent to hold to the criteria, and the failure is already on the board.
 func (l *Loop) reviewGroupAfterRun(ctx context.Context, plan *Plan) {
-	if !l.reviewEnabled() || stopped(ctx) {
+	if stopped(ctx) {
 		return
 	}
 	target, err := l.groupTargetFor(plan)
@@ -356,9 +359,6 @@ func (l *Loop) groupTargetFor(plan *Plan) (*reviewTarget, error) {
 // the schedule is bounded — a restart after a wide breakdown would otherwise
 // open a review per subtask at once.
 func (l *Loop) ReviewParked(ctx context.Context) int {
-	if !l.reviewEnabled() {
-		return 0
-	}
 	targets, err := l.parkedTargets()
 	if err != nil {
 		log.Printf("could not list work awaiting review: %v\n", err)

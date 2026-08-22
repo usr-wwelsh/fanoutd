@@ -719,10 +719,32 @@ func (l *Loop) finish(taskID string, step int, summary string) {
 // configured to send it to. The agent's own sign-off is the same event either
 // way; what review changes is whether it is the last word.
 func (l *Loop) settleRun(taskID, summary string) error {
-	if l.reviewEnabled() {
+	task, err := l.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	review := l.reviewEnabled()
+	if task != nil {
+		review = l.reviewForTask(*task)
+	}
+	if review {
 		return l.store.SetTaskInReview(taskID, summary)
 	}
 	return l.store.SetTaskFinished(taskID, summary)
+}
+
+// reviewForTask resolves whether one task is reviewed: its own override when
+// it set one, else the board's setting. A breakdown's tasks all carry the same
+// override, so a group is never split between the review column and finished.
+func (l *Loop) reviewForTask(t models.Task) bool {
+	switch t.ReviewOverride {
+	case "on":
+		return true
+	case "off":
+		return false
+	default:
+		return l.reviewEnabled()
+	}
 }
 
 // summarizeExchanges renders a batch of calls into the single name and result

@@ -439,6 +439,33 @@ func (req BreakdownRequest) WithEvents(log *eventLog) BreakdownRequest {
 	return req
 }
 
+// A request naming its own orchestrator model outranks the board's setting —
+// the same relationship its own Model already had. Without this, the modal's
+// "plans the split" field would be decoration.
+func TestBreakdownRequestOrchestratorModelOutranksTheBoardSetting(t *testing.T) {
+	l, _, f := breakdownLoop(t, goodPlan)
+	l.SetOrchestratorModel("board-default-planner")
+
+	req := BreakdownRequest{Idea: "build a board", Model: "subtask-model", OrchestratorModel: "request-planner"}
+	if _, err := l.Breakdown(context.Background(), req); err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+
+	sent := f.sent()
+	if len(sent) != 1 {
+		t.Fatalf("made %d planning calls, want 1", len(sent))
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(sent[0]), &body); err != nil {
+		t.Fatalf("decoding the planning request: %v", err)
+	}
+	if body.Model != "request-planner" {
+		t.Errorf("planning model = %q, want the request's own orchestrator model", body.Model)
+	}
+}
+
 // buildGroup is reached with a validated plan, so the only way its own checks
 // fire is a race. Driving it directly is how the unwind gets covered - a group
 // that cannot be scheduled must leave nothing behind for the fallback to trip

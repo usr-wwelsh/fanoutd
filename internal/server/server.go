@@ -701,7 +701,13 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		// subtasks are titled by the breakdown.
 		Title string `json:"title"`
 		Model string `json:"model"`
-		Start bool   `json:"start"`
+		// OrchestratorModel overrides the board's orchestrator setting for this
+		// one breakdown. Empty falls through to that setting as usual.
+		OrchestratorModel string `json:"orchestrator_model"`
+		// Review overrides the board's review setting for this breakdown's
+		// tasks. Omitted (nil) follows the board's own setting.
+		Review *bool `json:"review"`
+		Start  bool  `json:"start"`
 		// Seed is material placed in the shared workspace before the subtasks
 		// run, and shown to the planner so the split can account for it.
 		Seed []models.SeedFile `json:"seed"`
@@ -724,11 +730,13 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	breq := agent.BreakdownRequest{
-		Title: strings.TrimSpace(req.Title),
-		Idea:  strings.TrimSpace(req.Idea),
-		Model: strings.TrimSpace(req.Model),
-		Start: req.Start,
-		Seed:  req.Seed,
+		Title:             strings.TrimSpace(req.Title),
+		Idea:              strings.TrimSpace(req.Idea),
+		Model:             strings.TrimSpace(req.Model),
+		OrchestratorModel: strings.TrimSpace(req.OrchestratorModel),
+		Review:            req.Review,
+		Start:             req.Start,
+		Seed:              req.Seed,
 	}
 
 	if strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") {

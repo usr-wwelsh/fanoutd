@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const taskCols = `id, title, description, goal, criteria, review_round, verdict, verdict_note, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, created_at, updated_at`
+const taskCols = `id, title, description, goal, criteria, review_round, verdict, verdict_note, column, summary, finish_flag, status, error, model, workspace_id, parent_id, group_id, review_override, created_at, updated_at`
 
 type Store struct {
 	db *sql.DB
@@ -66,6 +66,7 @@ func initSchema(db *sql.DB) error {
 		workspace_id TEXT NOT NULL DEFAULT '',
 		parent_id TEXT NOT NULL DEFAULT '',
 		group_id TEXT NOT NULL DEFAULT '',
+		review_override TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);`
@@ -120,6 +121,7 @@ func initSchema(db *sql.DB) error {
 		{"tasks", "review_round", "INTEGER NOT NULL DEFAULT 0"},
 		{"tasks", "verdict", "TEXT NOT NULL DEFAULT ''"},
 		{"tasks", "verdict_note", "TEXT NOT NULL DEFAULT ''"},
+		{"tasks", "review_override", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_name", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "tool_result", "TEXT NOT NULL DEFAULT ''"},
 		{"trace_steps", "calls", "TEXT NOT NULL DEFAULT ''"},
@@ -185,7 +187,12 @@ type NewTask struct {
 	Model       string
 	WorkspaceID string
 	ParentID    string
-	GroupID     string
+	// ReviewOverride pins whether this task is reviewed regardless of the
+	// board's own review setting: "on", "off", or "" to follow the board.
+	// A breakdown sets the same value on every task it creates, so the group
+	// either lands in the review column together or skips it together.
+	ReviewOverride string
+	GroupID        string
 }
 
 func (s *Store) CreateTask(title, description, goal, model string) (*models.Task, error) {
@@ -200,10 +207,10 @@ func (s *Store) CreateTaskFrom(nt NewTask) (*models.Task, error) {
 	}
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO tasks ("+taskCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		id, nt.Title, nt.Description, nt.Goal, nt.Criteria, nt.ReviewRound, "", "",
 		"ideas", "", false, models.StatusIdle, "",
-		nt.Model, workspaceID, nt.ParentID, nt.GroupID, now, now,
+		nt.Model, workspaceID, nt.ParentID, nt.GroupID, nt.ReviewOverride, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -225,7 +232,8 @@ func (s *Store) GetTask(id string) (*models.Task, error) {
 func scanTask(scan func(...any) error, t *models.Task) error {
 	return scan(&t.ID, &t.Title, &t.Description, &t.Goal, &t.Criteria, &t.ReviewRound,
 		&t.Verdict, &t.VerdictNote, &t.Column, &t.Summary, &t.FinishFlag, &t.Status,
-		&t.Error, &t.Model, &t.WorkspaceID, &t.ParentID, &t.GroupID, &t.CreatedAt, &t.UpdatedAt)
+		&t.Error, &t.Model, &t.WorkspaceID, &t.ParentID, &t.GroupID, &t.ReviewOverride,
+		&t.CreatedAt, &t.UpdatedAt)
 }
 
 func (s *Store) ListTasks() ([]models.Task, error) {

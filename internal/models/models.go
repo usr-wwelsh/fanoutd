@@ -69,9 +69,12 @@ type Task struct {
 	// distinguishes siblings that may run at once — and therefore need their
 	// writes arbitrated — from a task that merely continues an earlier one and
 	// is free to edit everything it inherited. Empty means neither.
-	GroupID   string    `json:"group_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	GroupID string `json:"group_id"`
+	// ReviewOverride pins whether this task is reviewed regardless of the
+	// board's own review setting: "on", "off", or "" to follow the board.
+	ReviewOverride string    `json:"review_override,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // GroupPlan is a breakdown's resolved schedule together with the state of its
