@@ -190,6 +190,40 @@ data: [DONE]
 	}
 }
 
+// A reasoning model streams its thinking as a separate delta field before any
+// content arrives — "reasoning" from OpenRouter's unified format, or
+// "reasoning_content" from DeepSeek's own API. Either way it is real output
+// arriving in real time, and an observer that only sees delta.Content watches
+// nothing for however long the model spends thinking.
+func TestConsumeStreamHandsReasoningToOnDelta(t *testing.T) {
+	body := `data: {"choices":[{"delta":{"reasoning":"Let's "}}]}
+
+data: {"choices":[{"delta":{"reasoning":"think."}}]}
+
+data: {"choices":[{"delta":{"reasoning_content":"Or this field."}}]}
+
+data: {"choices":[{"delta":{"content":"Answer"}}]}
+
+data: [DONE]
+`
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELine)
+	var got []string
+	res, err := consumeStream(scanner, func() {}, func(d string) { got = append(got, d) })
+	if err != nil {
+		t.Fatalf("consumeStream: %v", err)
+	}
+	want := []string{"Let's ", "think.", "Or this field.", "Answer"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("deltas = %q, want %q", got, want)
+	}
+	// Reasoning is not the reply: it must not leak into the content a caller
+	// goes on to parse as JSON.
+	if res.Content != "Answer" {
+		t.Errorf("content = %q, want %q (reasoning excluded)", res.Content, "Answer")
+	}
+}
+
 // The option has to survive the whole call chain — send, post, the rate-limit
 // and transient loops, attempt — or an observer silently sees nothing while
 // every other path keeps working.

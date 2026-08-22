@@ -52,6 +52,14 @@ type streamChunk struct {
 		Delta struct {
 			Content   string          `json:"content"`
 			ToolCalls []toolCallDelta `json:"tool_calls"`
+			// Reasoning and ReasoningContent carry a thinking model's chain of
+			// thought, split out from the reply proper. OpenRouter's unified
+			// format uses the former; DeepSeek's own API uses the latter. A
+			// reasoning model can spend most of a generation here before content
+			// starts, so it must reach onDelta too or a caller watching the
+			// stream sees nothing for however long that takes.
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 	// Error carries a provider failure that arrives after the 200, which is the
@@ -127,8 +135,19 @@ func consumeStream(body *bufio.Scanner, touch func(), onDelta func(string)) (*Re
 
 		delta := chunk.Choices[0].Delta
 		content.WriteString(delta.Content)
-		if onDelta != nil && delta.Content != "" {
-			onDelta(delta.Content)
+		if onDelta != nil {
+			// The reply is what gets parsed afterwards, so only it goes into
+			// content — but reasoning is not appended there, only observed:
+			// a thinking model's chain of thought must never leak into a
+			// result a caller goes on to parse as JSON.
+			switch {
+			case delta.Content != "":
+				onDelta(delta.Content)
+			case delta.Reasoning != "":
+				onDelta(delta.Reasoning)
+			case delta.ReasoningContent != "":
+				onDelta(delta.ReasoningContent)
+			}
 		}
 		for _, tc := range delta.ToolCalls {
 			b := builders[tc.Index]
