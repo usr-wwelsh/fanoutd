@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -147,6 +148,18 @@ const rateLimitMaxWait = 75 * time.Second
 // wake at once and the first one through takes the window again.
 const rateLimitJitter = 2 * time.Second
 
+// transientRetries is how many extra attempts a failed request gets when the
+// failure looks like nobody's fault — a 5xx from an overloaded upstream, a
+// dropped connection, a provider that went silent mid-generation. Free
+// endpoints do all three routinely, and a run that dies to one loses every
+// step it already paid for.
+const transientRetries = 2
+
+// transientBackoff is the delay before the first transient retry; it doubles
+// each time. Short by rate-limit standards: these failures are usually gone
+// within seconds, and a run is already pacing itself through the step loop.
+const transientBackoff = time.Second
+
 // attemptResult is one round trip. A non-2xx carries its body so the caller can
 // build the error message; a 200 carries the assembled turn.
 type attemptResult struct {
@@ -159,10 +172,47 @@ type attemptResult struct {
 	body    string
 }
 
-// post sends the request body, retrying a 429 with exponential backoff. Rate
-// limiting is routine on free models and shorter-lived than a whole run, so it
-// must not abort the task on the first refusal.
+// post sends the request body and re-asks the transient failures. A refusal
+// for cause — a 4xx, a cancelled context — comes straight back; anything that
+// could plausibly succeed on a second attempt gets transientRetries more
+// tries, on top of whatever the rate-limit loop inside does with 429s.
 func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
+	var last error
+	for try := 0; ; try++ {
+		result, err := c.postOnce(ctx, body)
+		if err == nil {
+			return result, nil
+		}
+		last = err
+		if try >= transientRetries || ctx.Err() != nil || !transientFailure(err) {
+			return nil, last
+		}
+		if err := waitFor(ctx, transientBackoff<<try+jitter()); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// errRateLimitExhausted marks a refusal that already sat through its full
+// retry schedule. It is not transient: re-asking would only repeat the same
+// minute of waiting.
+var errRateLimitExhausted = errors.New("rate limit")
+
+// transientFailure reports whether an error might succeed if the request were
+// sent again. Cancellation is never one: a stopped task must not be made to
+// look like a flaky provider. Everything else is given the benefit of the
+// doubt — classifying socket errors by their message strings is exactly the
+// kind of cleverness that silently stops matching the next provider's wording.
+func transientFailure(err error) bool {
+	return !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, errRateLimitExhausted)
+}
+
+// postOnce sends the request body once, retrying a 429 with exponential
+// backoff. Rate limiting is routine on free models and shorter-lived than a
+// whole run, so it must not abort the task on the first refusal.
+func (c *Client) postOnce(ctx context.Context, body []byte) (*Result, error) {
 	delay := rateLimitBackoff
 
 	for attempt := 0; ; attempt++ {
@@ -179,7 +229,7 @@ func (c *Client) post(ctx context.Context, body []byte) (*Result, error) {
 		if attempt >= rateLimitRetries {
 			// Say plainly that waiting was tried, so the trace does not read as a
 			// run that gave up on the first refusal.
-			return nil, fmt.Errorf("still rate limited after %d retries: %s", attempt, got.body)
+			return nil, fmt.Errorf("%w: still rate limited after %d retries: %s", errRateLimitExhausted, attempt, got.body)
 		}
 
 		wait := delay

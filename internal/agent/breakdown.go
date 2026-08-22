@@ -222,7 +222,9 @@ func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakd
 		// that reject it.
 		resp, err := l.api().Chat(ctx, messages, llm.ChatOptions{ForceJSON: true, Model: model})
 		if err != nil {
-			// A transport failure is not a bad plan; re-asking would only repeat it.
+			// The client has already re-asked everything transient, so what
+			// survives here is a refusal for cause — which says nothing about
+			// the plan, and is not worth spending the replan on.
 			return nil, fmt.Errorf("breakdown call failed: %w", err)
 		}
 
