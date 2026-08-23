@@ -135,12 +135,15 @@ export async function retryTask(taskId, body = {}) {
 // snapshots of what the planner has written so far — and one final object
 // carrying the result. onEvent sees every line except that last one; the
 // resolved result is the return value. When the idea cannot be partitioned the
-// server still resolves, with the reason in `fallback`.
-export async function breakdownStream(body, onEvent) {
+// server still resolves, with the reason in `fallback`. Aborting `signal` closes
+// the connection, which the server reads as a disconnect and cancels the
+// breakdown it was running.
+export async function breakdownStream(body, onEvent, signal) {
   const res = await fetch(`${API_BASE}/breakdown`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     // Errors before the stream opens are plain HTTP errors.

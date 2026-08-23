@@ -7,7 +7,8 @@
   const dispatch = createEventDispatcher();
 
   // Two phases in one dialog: the idea goes in, and what came back stays on
-  // screen while it runs. Closing early would hide the only view of the plan.
+  // screen while it runs — unless the idea didn't split, in which case there
+  // is no plan to show and submit() closes the dialog itself.
   let idea = $state('');
   // Three separate models are in play for one breakdown — what the subtasks
   // run on, what plans the split, and what reviews the result — and showing
@@ -40,6 +41,10 @@
   let elapsed = $state(0);
   let clock = null;
   let tailBox = $state(null);
+  // Lets the Cancel button abort the in-flight split; aborting the fetch
+  // closes the connection, which the server reads as a disconnect and stops
+  // the breakdown it was running.
+  let controller = null;
 
   // The seed is read here and travels in the request body, so what the planner
   // is shown is settled before the slow call starts.
@@ -53,7 +58,7 @@
   let waves = $derived(plan?.waves ?? []);
   let doneCount = $derived((plan?.tasks ?? []).filter(t => t.status === 'done').length);
 
-  onDestroy(() => { stopPolling(); stopClock(); });
+  onDestroy(() => { controller?.abort(); stopPolling(); stopClock(); });
 
   function stopPolling() {
     if (poll) clearInterval(poll);
@@ -82,11 +87,12 @@
     phaseNote = '';
     progress = null;
     beginClock();
+    controller = new AbortController();
     try {
       // The server streams its work as it happens — the stage it has reached,
       // and snapshots of what the planner has written — so the wait has
       // something to watch.
-      result = await breakdownStream(
+      const res = await breakdownStream(
         { idea, model, orchestrator_model: orchestratorModel, review, start: true, seed },
         (e) => {
           if (e.kind === 'phase') {
@@ -96,13 +102,25 @@
             progress = e;
           }
         },
+        controller.signal,
       );
-      plan = result.plan ?? null;
       dispatch('created');
-      if (result.group_id) startPolling(result.group_id);
+      if (res.fallback) {
+        // No group came of this — the idea ran as one ordinary task, which
+        // now lives on the board like any other. Nothing left for this
+        // dialog to show.
+        close();
+      } else {
+        result = res;
+        plan = res.plan ?? null;
+        if (res.group_id) startPolling(res.group_id);
+      }
     } catch (e) {
-      error = e instanceof AuthError ? 'The session expired. Log in again to continue.' : e.message;
+      if (e.name !== 'AbortError') {
+        error = e instanceof AuthError ? 'The session expired. Log in again to continue.' : e.message;
+      }
     }
+    controller = null;
     stopClock();
     loading = false;
   }
@@ -161,6 +179,14 @@
   function close() {
     stopPolling();
     dispatch('close');
+  }
+
+  // While a split is in flight, Cancel aborts it instead of just hiding the
+  // dialog, so orchestration on the server actually stops rather than running
+  // to completion unseen.
+  function cancel() {
+    if (loading) controller?.abort();
+    close();
   }
 
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -306,28 +332,12 @@
           {/if}
         </p>
         <div class="modal-actions">
-          <button class="btn" type="button" onclick={close} disabled={loading}>Cancel</button>
+          <button class="btn" type="button" onclick={cancel}>Cancel</button>
           <button class="btn primary" type="submit" disabled={loading}>
             {loading ? 'Splitting…' : 'Split and run'}
           </button>
         </div>
       </form>
-
-    {:else if result.fallback}
-      <!-- The floor: the idea did not divide, so it runs as one task. -->
-      <div class="notice">{result.fallback}</div>
-      <div class="rows">
-        {#each result.tasks as task (task.id)}
-          <div class="subtask">
-            <span class="mark {task.status}"></span>
-            <span class="name">{task.title}</span>
-            <span class="state {task.status}">{task.status}</span>
-          </div>
-        {/each}
-      </div>
-      <div class="modal-actions">
-        <button class="btn primary" type="button" onclick={close}>Close</button>
-      </div>
 
     {:else}
       <dl class="tally">

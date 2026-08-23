@@ -305,8 +305,9 @@
     <SettingsModal on:close={() => showSettings = false} on:saved={() => loadTasks()} />
   {/if}
 
-  <!-- Unlike New Task, this stays open after it submits: the wave plan and the
-       subtasks running under it are the result, and closing would hide them. -->
+  <!-- Unlike New Task, this stays open after it submits when the idea actually
+       split: the wave plan and the subtasks running under it are the result,
+       and closing would hide them. A fallback to one task closes it itself. -->
   {#if showBreakdown}
     <BreakdownModal
       on:close={() => showBreakdown = false}
