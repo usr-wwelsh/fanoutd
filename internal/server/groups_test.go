@@ -204,6 +204,36 @@ func TestDeleteGroupRemovesEverySubtaskAndTheSharedWorkspace(t *testing.T) {
 	}
 }
 
+// A supplied "plan" must never reach the model: the server here has a nil LLM
+// client, so any attempt to plan would panic rather than merely waste tokens.
+func TestBreakdownWithSuppliedPlanBypassesTheModel(t *testing.T) {
+	srv, _ := groupServer(t)
+	body := `{"idea": "build a board", "plan": {
+		"contract": "board.js exports mount(el) and reads schema.json for its cells",
+		"subtasks": [
+			{"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "criteria": ["schema.json parses as JSON"]},
+			{"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"], "integration": true, "criteria": ["mount(el) renders one cell per schema entry"]}
+		]
+	}}`
+
+	w := httptest.NewRecorder()
+	srv.handleBreakdown(w, httptest.NewRequest(http.MethodPost, "/api/breakdown", strings.NewReader(body)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d, want %d: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var result models.BreakdownResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if result.Fallback != "" {
+		t.Fatalf("a valid supplied plan fell back: %s", result.Fallback)
+	}
+	if len(result.Tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(result.Tasks))
+	}
+}
+
 func TestBreakdownRejectsAnEmptyIdea(t *testing.T) {
 	srv, _ := groupServer(t)
 	w := httptest.NewRecorder()

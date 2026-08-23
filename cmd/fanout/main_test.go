@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fanoutd/internal/client"
 	"fanoutd/internal/models"
 )
 
@@ -32,7 +33,10 @@ type board struct {
 	// breakdown is what POST /api/breakdown returns; groups is what the plan
 	// endpoints serve, keyed by group id.
 	breakdown *models.BreakdownResult
-	groups    map[string]*models.GroupPlan
+	// breakdownReq captures the body of the last POST /api/breakdown, so a test
+	// can assert on what the CLI actually sent rather than only on the response.
+	breakdownReq *client.Idea
+	groups       map[string]*models.GroupPlan
 	// groupPlans, when set for a group, is served one entry per plan call, so a
 	// group watch can be walked through a schedule.
 	groupPlans map[string][]*models.GroupPlan
@@ -71,6 +75,9 @@ func (b *board) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) == 2 && parts[1] == "breakdown" {
+		var req client.Idea
+		json.NewDecoder(r.Body).Decode(&req)
+		b.breakdownReq = &req
 		if b.breakdown == nil {
 			http.Error(w, "no breakdown configured", http.StatusInternalServerError)
 			return

@@ -711,6 +711,11 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		// Seed is material placed in the shared workspace before the subtasks
 		// run, and shown to the planner so the split can account for it.
 		Seed []models.SeedFile `json:"seed"`
+		// Plan, when set, is built directly instead of asked of the
+		// orchestrator model: Idea still names and labels the group, but the
+		// partition itself is this plan, validated exactly as a model's reply
+		// would be. OrchestratorModel and the planning phase are both skipped.
+		Plan *models.BreakdownPlan `json:"plan"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -737,6 +742,7 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		Review:            req.Review,
 		Start:             req.Start,
 		Seed:              req.Seed,
+		Plan:              req.Plan,
 	}
 
 	if strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") {

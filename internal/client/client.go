@@ -273,6 +273,10 @@ type Idea struct {
 	// Seed lands in the shared workspace before the subtasks run, and is shown
 	// to the planner so the split can be drawn around it.
 	Seed []models.SeedFile `json:"seed,omitempty"`
+	// Plan, when set, is built directly and the orchestrator model is never
+	// asked: Idea still labels the group, but the partition is this plan,
+	// validated exactly as a model's reply would be.
+	Plan *models.BreakdownPlan `json:"plan,omitempty"`
 }
 
 // Breakdown splits an idea into a group of subtasks, or - when it cannot - into

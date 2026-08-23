@@ -79,6 +79,28 @@ On the board a breakdown is one card with a single badge for the whole plan.
 Dragging it files every subtask at once; deleting it removes all of them and the
 shared workspace. `fanout plan <group>` shows the waves and each subtask's state.
 
+### Supplying your own plan
+
+`--plan file.json` skips the model call: the file is the plan, in the same
+shape the orchestrator would have produced —
+
+```json
+{"contract": "the interface every subtask builds against",
+ "subtasks": [
+  {"title": "schema", "goal": "...", "writes": ["schema.json"], "reads": [],
+   "criteria": ["schema.json parses as JSON"]},
+  {"title": "impl", "goal": "...", "writes": ["board.js"], "reads": ["schema.json"],
+   "criteria": ["mount(el) renders one cell per schema entry"], "integration": true}
+]}
+```
+
+It still goes through the same checks a model's reply would: one writer per
+path, no cycles, every subtask carrying criteria. A plan that fails validation
+falls back to a single task exactly as an unsplittable idea would; nothing about
+`--plan` skips that floor, only the model call that normally produces the plan.
+`fanout breakdown "<idea>" --plan plan.json --start` — the idea still labels the
+group and is what every subtask is told it's one part of.
+
 ## Seeding a workspace
 
 `--seed` puts material in the workspace before anything runs. It takes a file or
@@ -406,7 +428,7 @@ spends credits — set a token before exposing it beyond localhost.
 | GET | `/api/tasks/:id/raw?path=` | One workspace file, served inline |
 | POST | `/api/tasks/:id/continue` | New goal against the same workspace |
 | POST | `/api/tasks/:id/retry` | Same brief, clean workspace |
-| POST | `/api/breakdown` | Split an idea into subtasks; blocks on the model; optional `seed` |
+| POST | `/api/breakdown` | Split an idea into subtasks; blocks on the model; optional `seed`, or supply `plan` yourself to skip the model entirely |
 | GET | `/api/groups/:id/plan` | The resolved waves and every subtask's state |
 | POST | `/api/groups/:id/start` · `/stop` | Run the schedule, or cancel it and everything under it |
 | GET | `/api/models` · `/api/health` | Accepted models and its default; health check |
@@ -430,7 +452,7 @@ c762903  Tetris clone          todo      running   step 7      write_file wrote 
 | Command | Notes |
 |---|---|
 | `add <title> [--goal ...] [--desc ...] [--seed path] [--model ...] [--start] [--watch]` | `--goal -` reads the goal from stdin |
-| `breakdown "<idea>" [--seed path] [--model ...] [--start] [--watch]` | split it into subtasks and run them; `-` reads stdin |
+| `breakdown "<idea>" [--plan file.json] [--seed path] [--model ...] [--start] [--watch]` | split it into subtasks and run them; `-` reads stdin; `--plan` supplies the split yourself and skips the orchestrator model |
 | `plan <group> [--start] [--watch] [--json]` | the wave plan of a breakdown, and its subtasks |
 | `ls [--col todo] [--status running] [--json] [--plain]` | the table above |
 | `blocked [--resume] [--all] [--json]` | runs that stopped short, and why |

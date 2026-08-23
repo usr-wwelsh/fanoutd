@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,6 +73,40 @@ func TestBreakdownReportsTheFallback(t *testing.T) {
 	}
 	if !strings.Contains(out, "ffff000") {
 		t.Errorf("the single task should be named:\n%s", out)
+	}
+}
+
+// --plan reads a plan from a file and sends it verbatim, instead of leaving
+// the idea for the server to split.
+func TestBreakdownWithPlanSendsItInTheRequest(t *testing.T) {
+	b, plan := boardWithGroup(models.StatusIdle)
+	b.tasks = nil
+	b.breakdown = &models.BreakdownResult{GroupID: testGroupID, Tasks: plan.Tasks, Plan: plan}
+
+	planFile := filepath.Join(t.TempDir(), "plan.json")
+	planJSON := `{"contract": "board.js exports mount(el)", "subtasks": [
+		{"title": "schema", "goal": "write the schema", "writes": ["schema.json"], "criteria": ["valid JSON"]},
+		{"title": "impl", "goal": "write the board", "writes": ["board.js"], "reads": ["schema.json"], "criteria": ["mounts"]}
+	]}`
+	if err := os.WriteFile(planFile, []byte(planJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	code, out := runCLI(t, b, "breakdown", "build a board", "--plan", planFile)
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if b.breakdownReq == nil || b.breakdownReq.Plan == nil {
+		t.Fatal("the request sent no plan")
+	}
+	if b.breakdownReq.Idea != "build a board" {
+		t.Errorf("idea = %q, want the idea text alongside the plan", b.breakdownReq.Idea)
+	}
+	if len(b.breakdownReq.Plan.Subtasks) != 2 {
+		t.Fatalf("plan carried %d subtasks, want the 2 from the file", len(b.breakdownReq.Plan.Subtasks))
+	}
+	if b.breakdownReq.Plan.Subtasks[1].Goal != "write the board" {
+		t.Errorf("subtask goal = %q, want the file's own text", b.breakdownReq.Plan.Subtasks[1].Goal)
 	}
 }
 

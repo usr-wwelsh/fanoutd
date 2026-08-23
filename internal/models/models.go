@@ -168,6 +168,35 @@ type SeedFile struct {
 	Content string `json:"content"`
 }
 
+// Subtask is one piece of a breakdown: a file partition together with the brief
+// for the agent that will build it. It is produced by the orchestrator model
+// from an idea, or supplied directly in a POST /api/breakdown "plan" — the two
+// are the same shape because a hand-written plan is checked by exactly the
+// rules a model-written one is.
+type Subtask struct {
+	Title  string   `json:"title"`
+	Goal   string   `json:"goal"`
+	Writes []string `json:"writes"`
+	Reads  []string `json:"reads"`
+	// Criteria is what review holds the subtask's output to: statements a
+	// reader can check against the files without asking anyone.
+	Criteria []string `json:"criteria"`
+	// Integration marks the subtask that assembles the others. It runs last —
+	// its reads already put it there — and is given a different brief.
+	Integration bool `json:"integration"`
+}
+
+// BreakdownPlan is a whole partition: the interface every subtask is built
+// against, and the subtasks themselves. It lives here, not in the agent
+// package, so a client can build one by hand and send it in the "plan" field
+// of POST /api/breakdown — which skips the orchestrator model call and runs
+// the plan straight through the same ownership, cycle, and criteria checks a
+// model's reply would face.
+type BreakdownPlan struct {
+	Contract string    `json:"contract"`
+	Subtasks []Subtask `json:"subtasks"`
+}
+
 // FileEntry is one file in a task workspace, as returned by /api/tasks/:id/files.
 type FileEntry struct {
 	Path string `json:"path"`

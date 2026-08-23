@@ -9,8 +9,8 @@ import (
 // planOf wraps subtasks with a contract, so a test aimed at the partition is not
 // also asserting on the contract rule. The ones that mean to check that rule
 // build the plan themselves.
-func planOf(subs ...Subtask) *breakdownPlan {
-	return &breakdownPlan{Contract: "a.md holds the schema", Subtasks: subs}
+func planOf(subs ...Subtask) *BreakdownPlan {
+	return &BreakdownPlan{Contract: "a.md holds the schema", Subtasks: subs}
 }
 
 func TestParseBreakdownReadsFencedJSON(t *testing.T) {
@@ -226,7 +226,7 @@ func TestValidateAllowsSelfReads(t *testing.T) {
 // invent the interface, producing parts that separately meet their goals and do
 // not fit together.
 func TestValidateRejectsASeamWithNoContract(t *testing.T) {
-	err := validateBreakdown(&breakdownPlan{Subtasks: []Subtask{
+	err := validateBreakdown(&BreakdownPlan{Subtasks: []Subtask{
 		{Title: "world", Goal: "g", Writes: []string{"world.js"}},
 		{Title: "player", Goal: "g", Writes: []string{"player.js"}, Reads: []string{"world.js"}},
 	}})
@@ -242,7 +242,7 @@ func TestValidateRejectsASeamWithNoContract(t *testing.T) {
 // A partition whose parts never meet has no interface to agree on, and spending
 // the retry on one would only push a runnable plan towards the fallback.
 func TestValidateAllowsNoContractWhenNothingReads(t *testing.T) {
-	err := validateBreakdown(&breakdownPlan{Subtasks: []Subtask{
+	err := validateBreakdown(&BreakdownPlan{Subtasks: []Subtask{
 		{Title: "a", Goal: "g", Writes: []string{"a.md"}, Criteria: []string{"a.md lists every field"}},
 		{Title: "b", Goal: "g", Writes: []string{"b.md"}, Criteria: []string{"b.md lists every field"}},
 	}})

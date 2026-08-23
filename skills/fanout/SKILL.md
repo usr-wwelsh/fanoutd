@@ -82,6 +82,64 @@ fanout add "<title>" --goal "<what done looks like>" --start
 `--goal -` reads the goal from stdin, which is the right way to pass anything
 long or multi-line.
 
+## Writing the plan yourself
+
+`breakdown` normally spends one model call turning the idea into a plan. You
+can skip that call and hand the board a finished plan instead:
+
+```bash
+fanout breakdown "<idea>" --plan plan.json --start
+```
+
+`plan.json` is the same shape the orchestrator model would have replied with:
+
+```json
+{"contract": "the exact interface every subtask must build against",
+ "subtasks": [
+  {"title": "short label",
+   "goal": "a complete, self-contained brief for one agent",
+   "writes": ["path/it/creates.ext"],
+   "reads": ["path/a/sibling/creates.ext"],
+   "criteria": ["a checkable statement about the finished output"],
+   "integration": false}
+]}
+```
+
+Reach for this instead of `breakdown "<idea>"` when you have already worked out
+the file split yourself — you were asked to plan the work before running it, the
+idea doesn't compress into one sentence a fresh model call could re-derive, or
+you already know the shape from context the orchestrator wouldn't have (an
+existing repo layout, a spec you just read). Writing the plan directly skips
+re-explaining that reasoning to another model and paying for it twice.
+
+The rules for a good plan are the same ones the orchestrator prompt follows,
+because the server checks a supplied plan exactly as it checks a model's reply
+— no shortcut on validation, only on who does the planning:
+
+- **Ownership.** A path has exactly one writer across "writes" lists. Two
+  subtasks naming the same path is rejected outright.
+- **Ordering.** Put a sibling's output path in "reads" to run after it; that is
+  the only way to express order. Do not number subtasks or describe order in a
+  goal. Reads must not form a cycle.
+- **The contract.** Required whenever any subtask's "reads" is non-empty. State
+  the exact functions, paths, and shapes two subtasks meet at — whichever one
+  produces something the other consumes needs it spelled out, not implied.
+- **Criteria.** Every subtask needs 2-4 checkable statements about its own
+  output — not a sibling's, and not "works well" or "handles errors properly."
+- **Integration.** A file every subtask would otherwise touch (an index, a
+  manifest) goes to one final subtask marked `"integration": true` that reads
+  the others' outputs and owns that shared file.
+- 2-8 subtasks, each writing at least one file. Each goal stands alone — the
+  agent running it sees only its own goal and the contract, never a sibling's
+  goal.
+
+A plan that fails these checks falls back to a single ordinary task carrying
+the idea text, the same floor an unsplittable idea hits — check the output
+before assuming the group was built. `--plan -` reads the plan from stdin; the
+idea argument still names and labels the group and is what each subtask is
+told it's one part of, so pass a short one even though the split is already
+decided.
+
 ## Seeding the workspace
 
 The agent cannot see this repo. When the work is *about* existing files — port

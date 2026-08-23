@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,11 +17,12 @@ func cmdBreakdown(e *env, args []string) error {
 	fs := e.flags("breakdown")
 	title := fs.String("title", "", "title for the fallback task, if the idea cannot be split")
 	model := fs.String("model", "", "override the server's default model")
+	planPath := fs.String("plan", "", `a breakdown plan as JSON, skipping the orchestrator model ("-" for stdin)`)
 	start := fs.Bool("start", false, "run the schedule immediately")
 	watch := fs.Bool("watch", false, "with --start, follow every subtask until the group ends")
 	seeds := seedFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), `usage: fanout breakdown "<idea>" [--seed path] [--start] [--watch]`)
+		fmt.Fprintln(fs.Output(), `usage: fanout breakdown "<idea>" [--plan file.json] [--seed path] [--start] [--watch]`)
 		fs.PrintDefaults()
 	}
 	if err := e.parse(fs, args); err != nil {
@@ -28,6 +30,9 @@ func cmdBreakdown(e *env, args []string) error {
 	}
 
 	idea := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if idea == "-" && *planPath == "-" {
+		return fmt.Errorf(`idea and --plan cannot both read from stdin`)
+	}
 	if idea == "-" {
 		read, err := readStdin()
 		if err != nil {
@@ -40,14 +45,22 @@ func cmdBreakdown(e *env, args []string) error {
 		return fmt.Errorf(`an idea is required (or "-" to read stdin)`)
 	}
 
-	// Read before the model call, so a bad path costs no tokens.
+	// Read before any call, so a bad path or a malformed plan costs no tokens.
+	var plan *models.BreakdownPlan
+	if *planPath != "" {
+		p, err := readPlan(*planPath)
+		if err != nil {
+			return err
+		}
+		plan = p
+	}
 	seed, err := collectSeed(*seeds)
 	if err != nil {
 		return err
 	}
 
 	result, err := e.client.Breakdown(e.ctx, client.Idea{
-		Idea: idea, Title: *title, Model: *model, Start: *start, Seed: seed,
+		Idea: idea, Title: *title, Model: *model, Start: *start, Seed: seed, Plan: plan,
 	})
 	if err != nil {
 		return e.describeErr(err)
@@ -80,6 +93,27 @@ func cmdBreakdown(e *env, args []string) error {
 		fmt.Fprintf(e.out, "\nstart it with `fanout plan %s --start`\n", shortID(result.GroupID))
 	}
 	return nil
+}
+
+// readPlan loads a breakdown plan for --plan: the same {"contract", "subtasks"}
+// shape the orchestrator model replies with, supplied directly so the server
+// never has to ask for one. path is a file, or "-" for stdin.
+func readPlan(path string) (*models.BreakdownPlan, error) {
+	var raw []byte
+	var err error
+	if path == "-" {
+		raw, err = io.ReadAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading plan: %w", err)
+	}
+	var plan models.BreakdownPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		return nil, fmt.Errorf("plan is not valid JSON: %w", err)
+	}
+	return &plan, nil
 }
 
 func cmdPlan(e *env, args []string) error {

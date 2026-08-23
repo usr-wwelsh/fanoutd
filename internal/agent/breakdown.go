@@ -193,28 +193,12 @@ Rules:
 Prefer a clean partition with fewer subtasks over a wide one that makes two
 agents share a file.`
 
-// Subtask is one piece of a broken-down idea, exactly as the model returns it.
-type Subtask struct {
-	Title  string   `json:"title"`
-	Goal   string   `json:"goal"`
-	Writes []string `json:"writes"`
-	Reads  []string `json:"reads"`
-	// Criteria is what review will hold the subtask's output to. It is settled
-	// here, before the work starts, because a criterion written afterwards is
-	// written by whoever already knows what was built.
-	Criteria []string `json:"criteria"`
-	// Integration marks the subtask that assembles the others. It changes the
-	// brief it is given, not where it runs — the reads it declares already put
-	// it last.
-	Integration bool `json:"integration"`
-}
-
-// breakdownPlan is a whole reply: the partition, and the interface every part of
-// it is built against.
-type breakdownPlan struct {
-	Contract string    `json:"contract"`
-	Subtasks []Subtask `json:"subtasks"`
-}
+// Subtask and BreakdownPlan are the wire shape of a partition, whether it came
+// from the orchestrator model or was supplied directly by a caller skipping
+// it — see BreakdownRequest.Plan. They live in models so the client can build
+// one without linking this package.
+type Subtask = models.Subtask
+type BreakdownPlan = models.BreakdownPlan
 
 // BreakdownRequest is one idea to split. Title is only used if the split fails
 // and the idea has to be created as a single task.
@@ -237,6 +221,13 @@ type BreakdownRequest struct {
 	// breakdown creates, including the fallback. Nil follows the board's
 	// setting, same as a task created outside a breakdown.
 	Review *bool
+	// Plan, when set, is built directly: planBreakdown and its model call are
+	// skipped entirely, and this partition is validated exactly as one of the
+	// model's replies would be. A caller that already knows the file split —
+	// its own planner, or a person — uses this to bypass the orchestrator
+	// rather than describe the split in prose and pay to have it re-derived.
+	// OrchestratorModel is unused when Plan is set, since nothing is asked.
+	Plan *BreakdownPlan
 	// Events, when set, receives the breakdown's progress as it happens: which
 	// stage has been reached, and what the planner is writing while it writes
 	// it. It runs synchronously on the caller's goroutine and must be cheap —
@@ -270,7 +261,7 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 	}
 	req.Idea = idea
 
-	plan, err := l.planBreakdown(ctx, req)
+	plan, err := l.resolvePlan(ctx, req)
 	if err != nil {
 		return l.singleTask(req, err)
 	}
@@ -282,10 +273,25 @@ func (l *Loop) Breakdown(ctx context.Context, req BreakdownRequest) (*models.Bre
 	return result, nil
 }
 
+// resolvePlan returns the partition to build. A supplied Plan is normalized
+// and validated exactly as parseBreakdown's output would be — the checks are
+// the safety, not the model call — and never asked of the orchestrator at
+// all; otherwise it falls through to planBreakdown as before.
+func (l *Loop) resolvePlan(ctx context.Context, req BreakdownRequest) (*BreakdownPlan, error) {
+	if req.Plan == nil {
+		return l.planBreakdown(ctx, req)
+	}
+	plan := normalizePlan(req.Plan)
+	if err := validateBreakdown(plan); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
 // planBreakdown asks for a partition and gives the model exactly one chance to
 // repair a bad one, with the fault named. The conversation carries the rejected
 // plan so the correction is an edit rather than a fresh guess.
-func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*breakdownPlan, error) {
+func (l *Loop) planBreakdown(ctx context.Context, req BreakdownRequest) (*BreakdownPlan, error) {
 	messages := []llm.MsgBlock{
 		{Role: "system", Content: breakdownPrompt},
 		{Role: "user", Content: "Idea: " + req.Idea + seedBrief(req.Seed) + "\n\nSplit it. Reply with the JSON object and nothing else."},
@@ -366,16 +372,25 @@ by dropping part of the work.`, err)
 // parseBreakdown reads the plan out of the reply. Models fence their JSON and
 // narrate around it, which the step parser already deals with; this reuses that
 // scan, keyed on the field a breakdown carries instead.
-func parseBreakdown(content string) (*breakdownPlan, error) {
+func parseBreakdown(content string) (*BreakdownPlan, error) {
 	body, ok := extractJSONWith(content, breakdownKeys)
 	if !ok {
 		return nil, fmt.Errorf("the reply held no breakdown object")
 	}
-	var parsed breakdownPlan
+	var parsed BreakdownPlan
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return nil, fmt.Errorf("the breakdown was not valid JSON: %v", err)
 	}
+	return normalizePlan(&parsed), nil
+}
 
+// normalizePlan tidies a plan into the shape validateBreakdown and buildGroup
+// expect, whichever side it came from: the model's reply, already parsed out
+// of its envelope, or a plan a caller supplied directly. Applying it to both
+// is what lets a hand-written plan skip the model call without skipping the
+// checks — a stray "./board.js" or a blank criterion is caught the same way
+// either path arrives.
+func normalizePlan(parsed *BreakdownPlan) *BreakdownPlan {
 	subs := make([]Subtask, 0, len(parsed.Subtasks))
 	for _, s := range parsed.Subtasks {
 		s.Goal = strings.TrimSpace(s.Goal)
@@ -392,7 +407,7 @@ func parseBreakdown(content string) (*breakdownPlan, error) {
 		}
 		subs = append(subs, s)
 	}
-	return &breakdownPlan{Contract: strings.TrimSpace(parsed.Contract), Subtasks: subs}, nil
+	return &BreakdownPlan{Contract: strings.TrimSpace(parsed.Contract), Subtasks: subs}
 }
 
 // trimAll tidies a list of free-text lines and drops the empty ones. Criteria
@@ -443,7 +458,7 @@ func normalizeClaimPath(p string) (string, bool) {
 // validateBreakdown rejects a plan that cannot be run, phrasing the failure for
 // the model rather than for a log: every message here is fed back verbatim in
 // the retry, so it names the subtasks and paths at fault.
-func validateBreakdown(plan *breakdownPlan) error {
+func validateBreakdown(plan *BreakdownPlan) error {
 	subs := plan.Subtasks
 	if len(subs) == 0 {
 		return fmt.Errorf("the plan held no subtasks")
@@ -505,7 +520,7 @@ func validateCriteria(subs []Subtask) error {
 // A partition whose parts never read each other has no seam to get wrong, and
 // rejecting it for a missing string would spend the retry — and then the
 // fallback — on a plan that was already runnable.
-func validateContract(plan *breakdownPlan) error {
+func validateContract(plan *BreakdownPlan) error {
 	seam := false
 	for _, s := range plan.Subtasks {
 		if len(s.Reads) > 0 {
@@ -598,7 +613,7 @@ func quoteAll(in []string) []string {
 // claims that make it a schedule. Nothing is left half-built — if the graph will
 // not resolve, every task created here is deleted before returning, so the
 // caller's fallback starts from a clean board.
-func (l *Loop) buildGroup(req BreakdownRequest, plan *breakdownPlan) (*models.BreakdownResult, error) {
+func (l *Loop) buildGroup(req BreakdownRequest, plan *BreakdownPlan) (*models.BreakdownResult, error) {
 	groupID, workspaceID := store.NewID(), store.NewID()
 	created := []models.Task{}
 	subs := plan.Subtasks

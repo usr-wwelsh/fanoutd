@@ -466,6 +466,64 @@ func TestBreakdownRequestOrchestratorModelOutranksTheBoardSetting(t *testing.T) 
 	}
 }
 
+// A supplied Plan is the whole point of the bypass: no planning call happens
+// at all, yet the group it builds is identical to one the model would have
+// produced from goodPlan.
+func TestBreakdownWithSuppliedPlanSkipsTheModel(t *testing.T) {
+	l, _, f := breakdownLoop(t) // no queued replies: a planning call would get "not a plan"
+
+	plan := &BreakdownPlan{
+		Contract: "board.js exports mount(el) and reads schema.json for its cells",
+		Subtasks: []Subtask{
+			{Title: "schema", Goal: "write the schema", Writes: []string{"schema.json"}, Criteria: []string{"schema.json parses as JSON"}},
+			{Title: "impl", Goal: "write the board", Writes: []string{"board.js"}, Reads: []string{"schema.json"}, Criteria: []string{"mount(el) renders one cell per schema entry"}},
+			{Title: "page", Goal: "write the page", Writes: []string{"index.html"}, Reads: []string{"board.js"}, Integration: true, Criteria: []string{"index.html opens from file:// with no console errors"}},
+		},
+	}
+
+	result, err := l.Breakdown(context.Background(), BreakdownRequest{Idea: "build a board", Plan: plan})
+	if err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+	if result.Fallback != "" {
+		t.Fatalf("a valid supplied plan fell back: %s", result.Fallback)
+	}
+	if len(result.Tasks) != 3 {
+		t.Fatalf("got %d tasks, want 3", len(result.Tasks))
+	}
+	if n := len(f.sent()); n != 0 {
+		t.Errorf("made %d planning calls, want 0 — a supplied plan must skip the orchestrator", n)
+	}
+}
+
+// A supplied plan is checked by the same rules a model's reply is: it does not
+// get a free pass just because nobody asked for it.
+func TestBreakdownWithSuppliedPlanStillValidates(t *testing.T) {
+	l, _, f := breakdownLoop(t)
+
+	plan := &BreakdownPlan{
+		Subtasks: []Subtask{
+			{Title: "impl", Goal: "write the board", Writes: []string{"board.js"}},
+			{Title: "tests", Goal: "test the board", Writes: []string{"board.js", "test.js"}},
+		},
+	}
+
+	idea := "build a board with tests"
+	result, err := l.Breakdown(context.Background(), BreakdownRequest{Idea: idea, Plan: plan})
+	if err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+	if result.Fallback == "" {
+		t.Fatal("a conflicting supplied plan produced a group, want the single-task floor")
+	}
+	if result.Tasks[0].Goal != idea {
+		t.Errorf("fallback goal = %q, want the original idea", result.Tasks[0].Goal)
+	}
+	if n := len(f.sent()); n != 0 {
+		t.Errorf("made %d planning calls, want 0 even on a plan that fails validation", n)
+	}
+}
+
 // buildGroup is reached with a validated plan, so the only way its own checks
 // fire is a race. Driving it directly is how the unwind gets covered - a group
 // that cannot be scheduled must leave nothing behind for the fallback to trip
