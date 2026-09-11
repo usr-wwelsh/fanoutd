@@ -692,6 +692,7 @@ func splitVerdict(tools []pendingCall) (verdict, note string, rest []pendingCall
 // settleReview files the verdict against every task it covers.
 func (l *Loop) settleReview(ctx context.Context, t reviewTarget, step int, verdict, note string) {
 	if verdict == passTool {
+		note = clampSummary(note)
 		if note == "" {
 			note = "Reviewed against the criteria; no faults found."
 		}

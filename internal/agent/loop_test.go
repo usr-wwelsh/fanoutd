@@ -290,3 +290,39 @@ func TestParseResponseToolCallWithoutArguments(t *testing.T) {
 		t.Fatalf("tools = %+v", got.Tools)
 	}
 }
+
+// The finish and pass tool schemas ask the model for four sentences or fewer,
+// but a model on the wrong end of a board's OpenRouter key ignores that as
+// often as not, so the limit has to hold regardless of what the model wrote.
+func TestClampSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"under the limit", "Wrote report.md. Ran the tests.", "Wrote report.md. Ran the tests."},
+		{
+			"exactly at the limit",
+			"One. Two. Three. Four.",
+			"One. Two. Three. Four.",
+		},
+		{
+			"drops sentences past the limit",
+			"One. Two. Three. Four. Five. Six.",
+			"One. Two. Three. Four.",
+		},
+		{
+			"run-on with no sentence punctuation falls back to the byte cap",
+			strings.Repeat("word ", 200),
+			strings.TrimSpace(strings.Repeat("word ", 200)[:maxSummaryBytes]) + "...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampSummary(tt.in); got != tt.want {
+				t.Errorf("clampSummary(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

@@ -92,7 +92,7 @@ If you cannot make tool calls, reply with a single JSON object and nothing else 
 markdown, no code fences, no XML:
 
   {"goal_met": false, "next_action": "what you are doing and why", "tool": {"name":"write_file","path":"report.md","content":"..."}}
-  {"goal_met": true, "summary": "what you produced, including the files you wrote"}
+  {"goal_met": true, "summary": "what you produced, including the files you wrote - 4 sentences or fewer"}
 
 File contents belong in the "content" string, JSON-escaped. To think without touching
 files, omit "tool".
@@ -706,7 +706,7 @@ func (l *Loop) run(ctx context.Context, taskID string) {
 
 // finish files a run the model signed off on.
 func (l *Loop) finish(taskID string, step int, summary string) {
-	summary = strings.TrimSpace(summary)
+	summary = clampSummary(summary)
 	if summary == "" {
 		summary = fmt.Sprintf("Task completed in %d steps.", step)
 	}
@@ -1342,4 +1342,43 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n...[truncated]"
+}
+
+// maxSummarySentences bounds how much of the model's own sign-off survives
+// into the task record. The finish and pass tool schemas already ask for this,
+// but fanoutd routes to whatever model a board is configured with, and
+// instruction-following on that point varies too widely to trust - this is
+// the backstop that makes the limit real regardless of which model wrote it.
+const maxSummarySentences = 4
+
+// maxSummaryBytes backstops maxSummarySentences against a summary with no
+// sentence-ending punctuation to split on, where the sentence count never
+// reaches the limit and the whole run-on string would otherwise survive.
+const maxSummaryBytes = 600
+
+// clampSummary keeps the first maxSummarySentences sentences of s and then
+// caps what remains at maxSummaryBytes.
+func clampSummary(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	sentences, end := 0, len(s)
+	for i, r := range s {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		sentences++
+		if sentences >= maxSummarySentences {
+			end = i + 1
+			break
+		}
+	}
+	s = strings.TrimSpace(s[:end])
+
+	if len(s) > maxSummaryBytes {
+		s = strings.TrimSpace(s[:maxSummaryBytes]) + "..."
+	}
+	return s
 }

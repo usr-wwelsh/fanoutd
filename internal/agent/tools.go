@@ -100,7 +100,7 @@ func ToolDefs(sandboxed bool) []llm.Tool {
 		def("list_files", "List the files currently in the workspace.",
 			map[string]any{}),
 		def(finishTool, "Call this once the goal is fully achieved and every deliverable has been written to a file.",
-			map[string]any{"summary": str("What you produced, including the files you wrote.")}, "summary"),
+			map[string]any{"summary": str("What you produced, including the files you wrote. 4 sentences or fewer - this is read as a status line, not a report.")}, "summary"),
 	}
 
 	if sandboxed {
@@ -149,7 +149,7 @@ func VerdictToolDefs() []llm.Tool {
 	str, def := toolString, toolDef
 	return []llm.Tool{
 		def(passTool, "Accept the work. Call this only once you have checked every criterion and each one holds.",
-			map[string]any{"summary": str("What you checked and how you checked it, criterion by criterion.")}, "summary"),
+			map[string]any{"summary": str("What you checked and how you checked it, criterion by criterion. 4 sentences or fewer - this is read as a status line, not a report.")}, "summary"),
 		def(rejectTool, "Send the work back. Call this when any criterion does not hold.",
 			map[string]any{"findings": str("What is wrong and how to tell you have fixed it. Written for the agent that will do the rework, naming files and observed behaviour.")}, "findings"),
 	}
