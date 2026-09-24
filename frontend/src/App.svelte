@@ -12,6 +12,7 @@
   import { reviewState } from './lib/review.js';
   import { settled, tabTitle } from './lib/attention.js';
   import { pendingDeletes, visible } from './lib/pending.js';
+  import { DEFAULT_WIDTH, clampWidth, readWidth, saveWidth } from './lib/panel.js';
   import { AuthError, fetchAuthStatus, fetchTasks, logout, moveTask, deleteTask, moveGroup, deleteGroup } from './lib/api.js';
 
   let tasks = $state([]);
@@ -41,6 +42,41 @@
   let pending = $state([]);
   const deletions = pendingDeletes({ commit: commitDelete, onChange: (list) => pending = list });
   let shown = $derived(visible(tasks, pending));
+
+  let viewport = $state(window.innerWidth);
+  let panelWidth = $state(readWidth());
+  let width = $derived(clampWidth(panelWidth, viewport));
+  let dragging = $state(false);
+
+  function resizeTo(next) {
+    panelWidth = clampWidth(next, viewport);
+    saveWidth(panelWidth);
+  }
+
+  function gripDown(e) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragging = true;
+  }
+
+  function gripMove(e) {
+    if (dragging) panelWidth = clampWidth(viewport - e.clientX, viewport);
+  }
+
+  function gripUp() {
+    if (!dragging) return;
+    dragging = false;
+    saveWidth(panelWidth);
+  }
+
+  function gripKey(e) {
+    const step = e.shiftKey ? 120 : 32;
+    if (e.key === 'ArrowLeft') resizeTo(width + step);
+    else if (e.key === 'ArrowRight') resizeTo(width - step);
+    else if (e.key === 'Home') resizeTo(Infinity);
+    else if (e.key === 'End') resizeTo(0);
+    else return;
+    e.preventDefault();
+  }
 
   let running = $derived(shown.filter(t => t.status === 'running').length);
   // Work nobody has answered for yet. It is the one count that would otherwise
@@ -215,6 +251,8 @@
   }
 </script>
 
+<svelte:window bind:innerWidth={viewport} />
+
 {#if checkingAuth}
   <div class="loading eyebrow">Checking session…</div>
 {:else if !authed}
@@ -301,7 +339,25 @@
   {#if selectedId !== null}
     {@const task = shown.find(t => t.id === selectedId)}
     {#if task}
-      <div class="detail-panel">
+      <div class="detail-panel" class:dragging style="width: {width}px">
+        <div
+          class="grip"
+          style="right: {width - 4}px"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize detail panel"
+          aria-valuenow={width}
+          aria-valuemin={0}
+          aria-valuemax={viewport}
+          tabindex="0"
+          title="Drag to resize · double-click to reset"
+          onpointerdown={gripDown}
+          onpointermove={gripMove}
+          onpointerup={gripUp}
+          onpointercancel={gripUp}
+          ondblclick={() => resizeTo(DEFAULT_WIDTH)}
+          onkeydown={gripKey}
+        ></div>
         <button class="close-btn" aria-label="Close detail" onclick={() => selectedId = null}>✕</button>
         <TaskDetail
           task={task}
@@ -425,8 +481,6 @@
     right: 0;
     top: 0;
     bottom: 0;
-    width: 480px;
-    max-width: 92vw;
     background: var(--panel);
     border-left: 1px solid var(--ink);
     overflow-y: auto;
@@ -434,6 +488,17 @@
     box-shadow: var(--shadow-side);
     z-index: 20;
   }
+  .detail-panel.dragging { user-select: none; }
+  .grip {
+    position: fixed;
+    z-index: 21;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .grip:hover, .grip:focus-visible, .dragging .grip { background: var(--live-wash); border-left: 2px solid var(--live); outline: none; }
   .close-btn {
     position: absolute;
     top: 14px;
