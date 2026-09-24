@@ -10,6 +10,7 @@
   import { active, toggleTheme } from './lib/theme.svelte.js';
   import { loadSettings } from './lib/config.svelte.js';
   import { reviewState } from './lib/review.js';
+  import { settled, tabTitle } from './lib/attention.js';
   import { AuthError, fetchAuthStatus, fetchTasks, logout, moveTask, deleteTask, moveGroup, deleteGroup } from './lib/api.js';
 
   let tasks = $state([]);
@@ -42,6 +43,23 @@
   // idle while several finished runs wait on a verdict.
   let held = $derived(tasks.filter(t => reviewState(t)?.tone === 'judge').length);
   let dark = $derived(active() === 'dark');
+
+  $effect(() => { document.title = tabTitle({ running, held }); });
+
+  let canNotify = $state(typeof Notification !== 'undefined' && Notification.permission === 'default');
+
+  async function askToNotify() {
+    await Notification.requestPermission();
+    canNotify = false;
+  }
+
+  function announce(prev, next) {
+    if (!document.hidden || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    for (const task of settled(prev, next)) {
+      const note = new Notification(task.title, { body: task.status === 'done' ? 'Finished' : 'Failed', tag: task.id });
+      note.onclick = () => { window.focus(); focus = null; selectedId = task.id; note.close(); };
+    }
+  }
 
   onMount(() => {
     init();
@@ -104,7 +122,9 @@
 
   async function loadTasks() {
     try {
-      tasks = await fetchTasks();
+      const next = await fetchTasks();
+      announce(tasks, next);
+      tasks = next;
       error = '';
     } catch (e) {
       if (e instanceof AuthError) {
@@ -240,6 +260,9 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
+      {#if canNotify}
+        <button class="btn quiet" onclick={askToNotify} title="Get a desktop notification when a run finishes while this tab is in the background">Notify me</button>
+      {/if}
       <button class="btn quiet" onclick={handleRefresh} disabled={loading}>Refresh</button>
       <button class="btn" onclick={() => showNewTask = true}>New task</button>
       <button class="btn primary" onclick={() => showBreakdown = true}>Break down an idea</button>
