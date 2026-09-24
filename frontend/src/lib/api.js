@@ -80,7 +80,7 @@ export async function updateTask(id, updates) {
 // shares it; pass keepFiles to leave the output on disk.
 export async function deleteTask(id, keepFiles = false) {
   const query = keepFiles ? '?files=keep' : '';
-  return request(`/tasks/${id}${query}`, { method: 'DELETE' });
+  return request(`/tasks/${id}${query}`, { method: 'DELETE', keepalive: true });
 }
 
 export async function moveTask(id, column) {
@@ -210,7 +210,7 @@ export async function moveGroup(groupId, column) {
 // deleteGroup removes every subtask and the one workspace they share.
 export async function deleteGroup(groupId, keepFiles = false) {
   const query = keepFiles ? '?files=keep' : '';
-  return request(`/groups/${groupId}${query}`, { method: 'DELETE' });
+  return request(`/groups/${groupId}${query}`, { method: 'DELETE', keepalive: true });
 }
 
 export async function fetchModels() {

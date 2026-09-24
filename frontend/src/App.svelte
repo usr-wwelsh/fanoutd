@@ -11,6 +11,7 @@
   import { loadSettings } from './lib/config.svelte.js';
   import { reviewState } from './lib/review.js';
   import { settled, tabTitle } from './lib/attention.js';
+  import { pendingDeletes, visible } from './lib/pending.js';
   import { AuthError, fetchAuthStatus, fetchTasks, logout, moveTask, deleteTask, moveGroup, deleteGroup } from './lib/api.js';
 
   let tasks = $state([]);
@@ -37,11 +38,15 @@
     localStorage.setItem('fanoutd.view', next);
   }
 
-  let running = $derived(tasks.filter(t => t.status === 'running').length);
+  let pending = $state([]);
+  const deletions = pendingDeletes({ commit: commitDelete, onChange: (list) => pending = list });
+  let shown = $derived(visible(tasks, pending));
+
+  let running = $derived(shown.filter(t => t.status === 'running').length);
   // Work nobody has answered for yet. It is the one count that would otherwise
   // go unnoticed: nothing is running, nothing has failed, and the board looks
   // idle while several finished runs wait on a verdict.
-  let held = $derived(tasks.filter(t => reviewState(t)?.tone === 'judge').length);
+  let held = $derived(shown.filter(t => reviewState(t)?.tone === 'judge').length);
   let dark = $derived(active() === 'dark');
 
   $effect(() => { document.title = tabTitle({ running, held }); });
@@ -63,7 +68,9 @@
 
   onMount(() => {
     init();
-    return stopPolling;
+    const flush = () => deletions.flush();
+    window.addEventListener('pagehide', flush);
+    return () => { stopPolling(); window.removeEventListener('pagehide', flush); };
   });
 
   async function init() {
@@ -154,29 +161,21 @@
     selectedId = selectedId === taskId ? null : taskId;
   }
 
-  // Deleting removes the task, its trace, and its output files, so it asks first.
-  async function handleDeleteTask({ taskId, title }) {
+  function handleDeleteTask({ taskId, title }) {
     const task = tasks.find(t => t.id === taskId);
     const shared = task && tasks.some(t => t.id !== taskId && t.workspace_id === task.workspace_id);
-    const files = shared ? 'Its workspace is shared, so the files stay.' : 'Its output files are deleted too.';
-    if (!confirm(`Delete "${title ?? task?.title ?? taskId}"?\n\n${files}`)) return;
-    try {
-      await deleteTask(taskId);
-      if (selectedId === taskId) selectedId = null;
-      error = '';
-    } catch (e) {
-      if (reportError(e)) return;
-    }
-    loadTasks();
+    deletions.add({ kind: 'task', id: taskId, title: title ?? task?.title ?? taskId, note: shared ? 'shared workspace kept' : '' });
+    if (selectedId === taskId) selectedId = null;
   }
 
-  // A plan is one card, so deleting it is one confirm for the whole thing —
-  // subtasks share a workspace, and the files go with the last of them anyway.
-  async function handleDeleteGroup({ groupId, title, count }) {
-    if (!confirm(`Delete "${title}"?\n\nAll ${count} subtasks and their shared workspace are deleted.`)) return;
+  function handleDeleteGroup({ groupId, title, count }) {
+    deletions.add({ kind: 'group', id: groupId, title, note: `${count} subtasks` });
+    if (tasks.some(t => t.id === selectedId && t.group_id === groupId)) selectedId = null;
+  }
+
+  async function commitDelete(entry) {
     try {
-      await deleteGroup(groupId);
-      if (tasks.some(t => t.id === selectedId && t.group_id === groupId)) selectedId = null;
+      await (entry.kind === 'group' ? deleteGroup : deleteTask)(entry.id);
       error = '';
     } catch (e) {
       if (reportError(e)) return;
@@ -280,7 +279,7 @@
     <div class="loading eyebrow">Loading tasks…</div>
   {:else if view === 'plan'}
     <PlanView
-      tasks={tasks}
+      tasks={shown}
       selectedId={selectedId}
       on:selectTask={(e) => handleSelectTask(e.detail.taskId, e.detail.focus)}
       on:deleteGroup={(e) => handleDeleteGroup(e.detail)}
@@ -288,7 +287,7 @@
     />
   {:else}
     <Board
-      tasks={tasks}
+      tasks={shown}
       selectedId={selectedId}
       on:selectTask={(e) => handleSelectTask(e.detail.taskId, e.detail.focus)}
       on:taskMoved={(e) => handleTaskMoved(e.detail)}
@@ -300,13 +299,13 @@
   {/if}
 
   {#if selectedId !== null}
-    {@const task = tasks.find(t => t.id === selectedId)}
+    {@const task = shown.find(t => t.id === selectedId)}
     {#if task}
       <div class="detail-panel">
         <button class="close-btn" aria-label="Close detail" onclick={() => selectedId = null}>✕</button>
         <TaskDetail
           task={task}
-          tasks={tasks}
+          tasks={shown}
           {focus}
           on:refreshed={() => loadTasks()}
           on:openTask={(e) => { focus = null; selectedId = e.detail; loadTasks(); }}
@@ -337,6 +336,16 @@
       on:created={() => loadTasks()}
       on:openTask={(e) => { focus = null; selectedId = e.detail; loadTasks(); }}
     />
+  {/if}
+  {#if pending.length}
+    <div class="toasts" role="status" aria-live="polite">
+      {#each pending as entry (entry.id)}
+        <div class="toast">
+          <span class="toast-text">Deleted <strong>{entry.title}</strong>{#if entry.note} · {entry.note}{/if}</span>
+          <button class="btn tiny" onclick={() => deletions.undo(entry.id)}>Undo</button>
+        </div>
+      {/each}
+    </div>
   {/if}
 </main>
 {/if}
@@ -437,6 +446,28 @@
     padding: 4px;
   }
   .close-btn:hover { color: var(--ink); }
+
+  .toasts {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: min(420px, calc(100vw - 32px));
+  }
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 12px;
+    background: var(--panel);
+    border: 1px solid var(--ink);
+    box-shadow: var(--shadow);
+    font-size: 12.5px;
+  }
+  .toast-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   @media (max-width: 720px) {
     header { padding: 12px 16px; gap: 12px; }
