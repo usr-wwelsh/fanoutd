@@ -4,14 +4,41 @@
   // saw the run, and they are kept on the same task on purpose — the verdict
   // belongs where the work is. So they are told apart here rather than filed
   // apart: one lane, marked, with a filter for reading either on its own.
+  import { tick } from 'svelte';
   import { fetchTrace } from '../api.js';
+  import { nearBottom } from '../follow.js';
   import { isReviewStep, stepAction, verdictStep } from '../review.js';
 
-  let { taskId, live = false, focus = null } = $props();
+  let { taskId, live = false, focus = null, scroller = null } = $props();
 
   let trace = $state([]);
   let expanded = $state(true);
   let filter = $state('all');
+  let unseen = $state(0);
+
+  $effect(() => {
+    if (!scroller) return;
+    const onScroll = () => { if (nearBottom(scroller)) unseen = 0; };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => scroller.removeEventListener('scroll', onScroll);
+  });
+
+  function jump() {
+    unseen = 0;
+    scroller?.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+  }
+
+  // A live run is followed like a log: pinned to the newest step while the
+  // reader is at the bottom, and left alone with a count once they scroll up.
+  async function arrived(before, after) {
+    if (!live || !expanded || before === 0 || after <= before) return;
+    if (!nearBottom(scroller)) {
+      unseen += after - before;
+      return;
+    }
+    await tick();
+    scroller.scrollTop = scroller.scrollHeight;
+  }
 
   // Arriving from a verdict opens the trace on the reviewer's half, which is the
   // question that was asked. Keyed on the task so that opening a second one from
@@ -31,11 +58,17 @@
     const id = taskId;
     const interval = live ? 2000 : 10000;
     let cancelled = false;
+    let first = true;
+    unseen = 0;
 
     const load = async () => {
       try {
         const steps = await fetchTrace(id);
-        if (!cancelled) trace = steps;
+        if (cancelled) return;
+        const before = first ? 0 : trace.length;
+        first = false;
+        trace = steps;
+        arrived(before, steps.length);
       } catch (e) {
         console.error('Failed to load trace', e);
       }
@@ -111,6 +144,9 @@
           {/if}
         </div>
       {/each}
+    {/if}
+    {#if live && unseen > 0}
+      <button class="latest" onclick={jump}>{unseen} new step{unseen === 1 ? '' : 's'} ↓</button>
     {/if}
   {/if}
 </div>
@@ -228,6 +264,23 @@
     background: var(--panel);
   }
   .step-response { margin-top: 6px; }
+
+  .latest {
+    position: sticky;
+    bottom: 12px;
+    display: block;
+    margin: 8px 0 0 auto;
+    padding: 5px 11px;
+    background: var(--live);
+    color: var(--panel);
+    border: none;
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+  }
   .step-response summary {
     cursor: pointer;
     font-family: var(--f-mono);

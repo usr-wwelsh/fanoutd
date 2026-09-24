@@ -47,6 +47,7 @@
   let panelWidth = $state(readWidth());
   let width = $derived(clampWidth(panelWidth, viewport));
   let dragging = $state(false);
+  let panel = $state(null);
 
   function resizeTo(next) {
     panelWidth = clampWidth(next, viewport);
@@ -339,7 +340,7 @@
   {#if selectedId !== null}
     {@const task = shown.find(t => t.id === selectedId)}
     {#if task}
-      <div class="detail-panel" class:dragging style="width: {width}px">
+      <div class="detail-panel" class:dragging style="width: {width}px" bind:this={panel}>
         <div
           class="grip"
           style="right: {width - 4}px"
@@ -363,6 +364,7 @@
           task={task}
           tasks={shown}
           {focus}
+          scroller={panel}
           on:refreshed={() => loadTasks()}
           on:openTask={(e) => { focus = null; selectedId = e.detail; loadTasks(); }}
           on:openReview={(e) => { focus = 'review'; selectedId = e.detail; loadTasks(); }}

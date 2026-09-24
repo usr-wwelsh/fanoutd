@@ -13,7 +13,7 @@
 
   // focus is what the panel was opened to answer. Only the trace acts on it, by
   // opening on the reviewer's half when a verdict is what was clicked.
-  let { task, tasks = [], focus = null } = $props();
+  let { task, tasks = [], focus = null, scroller = null } = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -294,7 +294,7 @@
     {/if}
   </div>
 
-  <TraceView taskId={task.id} live={running} {focus} />
+  <TraceView taskId={task.id} live={running} {focus} {scroller} />
 </div>
 
 {#if showContinue}
